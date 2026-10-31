@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
+    "test:unit": "vitest run tests/shopify-graphql.test.ts",
     "test:integration": "vitest run tests/database.test.ts",
     "build": "react-router build",
     "dev": "shopify app dev",

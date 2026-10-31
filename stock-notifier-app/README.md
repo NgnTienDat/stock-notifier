@@ -58,6 +58,40 @@ Press P to open the URL to your app. Once you click install, you can start devel
 
 Local development is powered by [the Shopify CLI](https://shopify.dev/docs/apps/tools/cli). It logs into your account, connects to an app, provides environment variables, updates remote config, creates a tunnel and provides commands to generate extensions.
 
+### StockPulse GraphQL read service (Step 3)
+
+The server-only module is `app/modules/shopify/graphql/shopify-graphql.server.ts`. Pass the existing authenticated context; never accept a shop domain from the browser:
+
+```ts
+const context = await authenticate.admin(request);
+const shopifyReads = createShopifyGraphqlService(context);
+const locations = await shopifyReads.getLocations();
+// Use the authenticated shop's selected location from settings in a later milestone.
+const levels = await shopifyReads.getInventoryLevels(selectedLocationGid);
+const item = await shopifyReads.getInventoryItem(inventoryItemGid);
+```
+
+`getLocations()` returns active locations. `getInventoryLevels()` returns one record per tracked item at that location, including `availableQuantity`, nullable SKU, the complete variants metadata array and `shopifyUpdatedAt` as a Date. The Shopify `inventoryLevelGid` stays intact, including `?inventory_item_id=...`; it is separate from Prisma's app-owned `id`. Alert state, `isCurrent` and sync timestamps belong to the later sync milestone. This module performs no database writes.
+
+Missing/untracked/inactive levels or missing `available` are omitted, never turned into zero. Zero and negative quantities are retained. A missing item returns `null`; a nullable variants connection becomes `[]`. A missing/inactive location, failure on any page, or an item disappearing during variant pagination rejects the entire read. GraphQL errors reject even with partial data. HTTP 429/5xx and GraphQL `THROTTLED` get at most three attempts; retries use `Retry-After` or query-cost/restore-rate data when supplied, with fallback backoff. Authentication Responses propagate unchanged. Shopify pagination is a live read, not a transactional snapshot of the remote store.
+
+Run only mocked unit tests without Shopify credentials, PostgreSQL or Docker:
+
+```powershell
+npm run test:unit
+```
+
+Manual verification in Shopify GraphiQL:
+
+1. Run `npm run dev` with the working linked app configuration; press **g** to open GraphiQL. Select Admin API **2026-07**. Required scopes are `read_inventory,read_products`; `read_inventory` also grants Location access ([Location access](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/Location)). Existing additional `read_locations` does not need changing for this step.
+2. Copy `StockPulseLocations` from `app/modules/shopify/graphql/queries.ts` into GraphiQL (the query inside the template string). Set variables to `{"first":2,"after":null}`. Repeat with `after = pageInfo.endCursor` until `hasNextPage` is false; choose an active location GID.
+3. Run `StockPulseLocationInventory` with `{"locationId":"gid://shopify/Location/REPLACE","first":2,"after":null}`. Compare SKU and `quantities[name=available]` with Shopify Admin at that location. Follow the outer inventory cursor separately from each item's variants cursor. Keep level IDs exactly as returned.
+4. For each item with `variants.pageInfo.hasNextPage = true`, run `StockPulseInventoryItem` with `{"id":"gid://shopify/InventoryItem/REPLACE","first":2,"after":"VARIANT_END_CURSOR"}` until finished. Use `after:null` to read an item from its first variant page. Confirm multiple variants remain one inventory item.
+
+All three queries were checked with Shopify AI Toolkit against the 2026-07 schema. Field references: [InventoryItem](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/InventoryItem), [InventoryLevel](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/InventoryLevel), [rate limits](https://shopify.dev/docs/apps/build/apis/graphql-admin/rate-limits).
+
+Existing config discrepancy outside Step 3: both app TOML files currently use webhook API `2027-01`, whereas runtime/codegen and the approved docs use `2026-07`. This step does not change webhook configuration or the existing demo routes.
+
 ### Authenticating and querying data
 
 To authenticate and query data you can use the `shopify` const that is exported from `/app/shopify.server.js`:
