@@ -1,5 +1,13 @@
-import type { InventoryLevel, ShopSettings } from "@prisma/client";
+import type {
+  InventoryLevel,
+  MonitoredLocation,
+  ShopSettings,
+} from "@prisma/client";
 import db from "../../db.server";
+import {
+  completeWebhookJob,
+  type WebhookClaim,
+} from "./webhook-job.repository.server";
 import { applyInventoryAlertTransition } from "../alerts/alert.service.server";
 import type { InventoryLevelData } from "../shopify/graphql/types";
 import type { getInventorySyncSettings } from "./inventory.repository.server";
@@ -8,13 +16,6 @@ type Settings = NonNullable<
   Awaited<ReturnType<typeof getInventorySyncSettings>>
 >;
 
-export function hasInventoryWebhook(shopDomain: string, webhookId: string) {
-  return db.webhookEvent.findUnique({
-    where: { shopDomain_webhookId: { shopDomain, webhookId } },
-    select: { id: true },
-  });
-}
-
 export function commitInventoryWebhook(
   settings: Settings,
   sessionId: string,
@@ -22,18 +23,21 @@ export function commitInventoryWebhook(
   locationGid: string,
   inventoryItemGid: string,
   level: InventoryLevelData | null | undefined,
+  job?: WebhookClaim,
 ) {
   return db.$transaction(
     async (tx) => {
       await tx.$executeRaw`SET LOCAL lock_timeout = '500ms'`;
       await tx.$executeRaw`SET LOCAL statement_timeout = '1000ms'`;
       const [current] = await tx.$queryRaw<ShopSettings[]>`
-      SELECT * FROM "ShopSettings" WHERE "shopDomain" = ${settings.shopDomain} FOR UPDATE
+      SELECT * FROM "ShopSettings" WHERE "shopDomain" = ${settings.shopDomain} FOR SHARE
     `;
-      if (!current) return "settings_missing";
+      if (!current || !settings.monitored)
+        throw new Error("Monitored settings missing; retry required");
       if (
         await tx.webhookEvent.findUnique({
           where: {
+            processedAt: { not: null },
             shopDomain_webhookId: {
               shopDomain: settings.shopDomain,
               webhookId,
@@ -48,18 +52,28 @@ export function commitInventoryWebhook(
           select: { id: true },
         }))
       ) {
-        return "session_missing";
+        throw new Error("Offline session missing; retry required");
       }
-      if (
-        current.updatedAt.getTime() !== settings.updatedAt.getTime() ||
-        current.locationGid !== settings.locationGid
-      ) {
+      if (settings.monitored) {
+        const [location] = await tx.$queryRaw<MonitoredLocation[]>`
+          SELECT * FROM "MonitoredLocation" WHERE "shopDomain" = ${settings.shopDomain}
+          AND "locationGid" = ${settings.monitored.locationGid} FOR UPDATE
+        `;
+        if (
+          !location?.isActive ||
+          location.version !== settings.monitored.version
+        )
+          throw new Error(
+            "Location changed during webhook read; retry required",
+          );
+      }
+      if (current.updatedAt.getTime() !== settings.updatedAt.getTime()) {
         throw new Error(
           "Inventory/settings changed during webhook read; retry required",
         );
       }
       let result = "location_ignored";
-      if (locationGid === current.locationGid) {
+      if (locationGid === settings.monitored.locationGid) {
         if (level === undefined)
           throw new Error("Missing Shopify inventory read");
         const scope = {
@@ -111,26 +125,35 @@ export function commitInventoryWebhook(
           if (saved)
             await applyInventoryAlertTransition(
               tx,
-              current,
+              settings,
               previous,
               saved,
               now,
+              previous?.isCurrent ? "INVENTORY_TRANSITION" : "BASELINE",
             );
           // Invalidate in-flight full scans and other webhook reads, including negative reads.
-          await tx.shopSettings.update({
-            where: { shopDomain: current.shopDomain },
-            data: {
-              updatedAt: new Date(
-                Math.max(now.getTime(), current.updatedAt.getTime() + 1),
-              ),
-            },
-          });
+          if (settings.monitored)
+            await tx.monitoredLocation.update({
+              where: {
+                shopDomain_locationGid: {
+                  shopDomain: settings.shopDomain,
+                  locationGid,
+                },
+              },
+              data: { version: { increment: 1 } },
+            });
           result = level ? "updated" : "invalidated";
         }
       }
-      await tx.webhookEvent.create({
-        data: { shopDomain: settings.shopDomain, webhookId },
-      });
+      if (job) await completeWebhookJob(tx, job, result);
+      else
+        await tx.webhookEvent.create({
+          data: {
+            shopDomain: settings.shopDomain,
+            webhookId,
+            processedAt: new Date(),
+          },
+        });
       return result;
     },
     { maxWait: 500, timeout: 1500 },

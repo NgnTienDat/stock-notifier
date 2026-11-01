@@ -7,6 +7,12 @@ export const LOCATIONS_QUERY = `#graphql
   }
 `;
 
+export const LOCATION_QUERY = `#graphql
+  query StockPulseLocation($locationId: ID!) {
+    location(id: $locationId) { id name isActive }
+  }
+`;
+
 export const LOCATION_INVENTORY_QUERY = `#graphql
   query StockPulseLocationInventory($locationId: ID!, $first: Int!, $after: String) {
     location(id: $locationId) {

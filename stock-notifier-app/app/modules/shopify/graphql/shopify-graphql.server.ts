@@ -5,6 +5,7 @@ import {
   INVENTORY_LEVEL_QUERY,
   LOCATION_INVENTORY_QUERY,
   LOCATIONS_QUERY,
+  LOCATION_QUERY,
 } from "./queries";
 import type {
   GraphqlEnvelope,
@@ -19,8 +20,19 @@ import type {
   PageInfo,
 } from "./types";
 
-const sleep = (milliseconds: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const sleep = (milliseconds: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    signal?.throwIfAborted();
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 export class ShopifyGraphqlError extends Error {
   constructor(
@@ -66,7 +78,11 @@ function retryDelay(
 /** Reuse the authenticated admin/webhook context; no new auth or DB client. */
 export function createShopifyGraphqlService(
   { admin, session }: Pick<AdminContext, "admin" | "session">,
-  options: { signal?: AbortSignal; maxRetries?: number } = {},
+  options: {
+    signal?: AbortSignal;
+    maxRetries?: number;
+    requireAvailable?: boolean;
+  } = {},
 ) {
   async function query<T>(
     operation: string,
@@ -115,6 +131,7 @@ export function createShopifyGraphqlService(
                   )?.[1];
             await sleep(
               retryDelay(attempt, value == null ? null : String(value)),
+              options.signal,
             );
             continue;
           }
@@ -141,6 +158,7 @@ export function createShopifyGraphqlService(
               retryDelay(attempt),
               Number.isFinite(costDelay) ? costDelay : 0,
             ),
+            options.signal,
           );
           continue;
         }
@@ -161,6 +179,8 @@ export function createShopifyGraphqlService(
     const variants: InventoryItemData["variants"] = [];
     const seen = new Set<string>();
     let page = item.variants;
+    if (page === undefined)
+      throw new ShopifyGraphqlError("Shopify omitted inventory variants");
     while (page) {
       variants.push(
         ...page.nodes.map((variant) => ({
@@ -207,6 +227,17 @@ export function createShopifyGraphqlService(
       });
       if (!data.locations)
         throw new ShopifyGraphqlError("Shopify returned null locations");
+      if (
+        data.locations.nodes.some(
+          (location) =>
+            typeof location.isActive !== "boolean" ||
+            typeof location.id !== "string" ||
+            typeof location.name !== "string",
+        )
+      )
+        throw new ShopifyGraphqlError(
+          "Shopify returned incomplete location metadata",
+        );
       locations.push(
         ...data.locations.nodes
           .filter((location) => location.isActive)
@@ -215,6 +246,11 @@ export function createShopifyGraphqlService(
             locationName: location.name,
           })),
       );
+      if (
+        new Set(locations.map((location) => location.locationGid)).size !==
+        locations.length
+      )
+        throw new ShopifyGraphqlError("Shopify returned duplicate locations");
       after = nextCursor(data.locations.pageInfo, seen);
     } while (after);
     return locations;
@@ -264,6 +300,15 @@ export function createShopifyGraphqlService(
         const quantity = level.quantities.find(
           (value) => value.name === "available",
         )?.quantity;
+        if (
+          level.isActive &&
+          level.item.tracked &&
+          quantity == null &&
+          options.requireAvailable
+        )
+          throw new ShopifyGraphqlError(
+            "Shopify omitted available quantity; retry scan.",
+          );
         if (!level.isActive || !level.item.tracked || quantity == null)
           continue;
         const updatedAt = new Date(level.updatedAt);
@@ -322,6 +367,14 @@ export function createShopifyGraphqlService(
         "Shopify returned a different inventory item",
       );
     const level = item?.inventoryLevel;
+    if (
+      (data.location && typeof data.location.isActive !== "boolean") ||
+      (item && typeof item.tracked !== "boolean") ||
+      (level && typeof level.isActive !== "boolean")
+    )
+      throw new ShopifyGraphqlError(
+        "Shopify omitted inventory activity fields",
+      );
     if (!data.location?.isActive || !item?.tracked || !level?.isActive)
       return null;
     const quantity = level.quantities.find(
@@ -351,8 +404,30 @@ export function createShopifyGraphqlService(
     };
   }
 
+  async function getLocation(locationGid: string) {
+    const data = await query<{
+      location: { id: string; name: string; isActive: boolean } | null;
+    }>(LOCATION_QUERY, { locationId: locationGid });
+    if (data.location === null) return null;
+    if (
+      !data.location ||
+      data.location.id !== locationGid ||
+      typeof data.location.name !== "string" ||
+      typeof data.location.isActive !== "boolean"
+    )
+      throw new ShopifyGraphqlError(
+        "Shopify returned incomplete location metadata",
+      );
+    return {
+      locationGid,
+      locationName: data.location.name,
+      isActive: data.location.isActive,
+    };
+  }
+
   return {
     getLocations,
+    getLocation,
     getInventoryLevels,
     getInventoryItem,
     getInventoryLevel,

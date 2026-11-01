@@ -1,4 +1,5 @@
-import type { ShopSettings } from "@prisma/client";
+import type { MonitoredLocation, ShopSettings } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import db from "../../db.server";
 import type { InventoryLevelData } from "../shopify/graphql/types";
 import {
@@ -16,8 +17,11 @@ export class InventorySyncError extends Error {
   }
 }
 
-export function getInventorySyncSettings(shopDomain: string) {
-  return db.shopSettings.findUnique({
+export async function getInventorySyncSettings(
+  shopDomain: string,
+  locationGid?: string,
+) {
+  const settings = await db.shopSettings.findUnique({
     where: { shopDomain },
     select: {
       shopDomain: true,
@@ -27,18 +31,64 @@ export function getInventorySyncSettings(shopDomain: string) {
       locationName: true,
       lastSyncedAt: true,
       updatedAt: true,
+      locationsDiscoveredAt: true,
     },
   });
+  if (!settings) return null;
+  const monitored =
+    (locationGid || settings.locationsDiscoveredAt) &&
+    (locationGid ?? settings.locationGid)
+      ? await db.monitoredLocation.findUnique({
+          where: {
+            shopDomain_locationGid: {
+              shopDomain,
+              locationGid: (locationGid ?? settings.locationGid)!,
+            },
+          },
+        })
+      : null;
+  return {
+    ...settings,
+    ...(locationGid || settings.locationsDiscoveredAt
+      ? {
+          locationGid: monitored?.isActive ? monitored.locationGid : null,
+          locationName: monitored?.locationName ?? null,
+          lastSyncedAt: monitored?.baselineCompletedAt ?? null,
+        }
+      : {}),
+    monitored,
+  };
 }
 
 type SyncSettings = NonNullable<
   Awaited<ReturnType<typeof getInventorySyncSettings>>
 > & { locationGid: string };
 
+export function recordInventorySyncFailure(
+  settings: SyncSettings,
+  startedAt: Date,
+) {
+  if (!settings.monitored) return;
+  return db.monitoredLocation.updateMany({
+    where: {
+      shopDomain: settings.shopDomain,
+      locationGid: settings.locationGid,
+      version: settings.monitored.version,
+      isActive: true,
+    },
+    data: {
+      lastSyncAttemptAt: startedAt,
+      lastSyncError:
+        "Sync failed; previous snapshots were kept. Retry this location.",
+    },
+  });
+}
+
 export function commitInventorySync(
   settings: SyncSettings,
   levels: InventoryLevelData[],
   startedAt: Date,
+  offlineSessionId?: string,
 ) {
   return db.$transaction(
     async (tx) => {
@@ -46,16 +96,42 @@ export function commitInventorySync(
         Pick<ShopSettings, "locationGid" | "updatedAt">[]
       >`
       SELECT "locationGid", "updatedAt" FROM "ShopSettings"
-      WHERE "shopDomain" = ${settings.shopDomain} FOR UPDATE
+      WHERE "shopDomain" = ${settings.shopDomain}
+      ${settings.monitored ? Prisma.sql`FOR SHARE` : Prisma.sql`FOR UPDATE`}
     `;
       if (
         !current ||
-        current.locationGid !== settings.locationGid ||
+        (!settings.monitored && current.locationGid !== settings.locationGid) ||
         current.updatedAt.getTime() !== settings.updatedAt.getTime()
       ) {
         throw new InventorySyncError(
           "Settings changed or another sync completed during this scan. Run Sync now again.",
         );
+      }
+      if (settings.monitored) {
+        if (
+          offlineSessionId &&
+          !(await tx.session.findFirst({
+            where: {
+              id: offlineSessionId,
+              shop: settings.shopDomain,
+              isOnline: false,
+            },
+            select: { id: true },
+          }))
+        )
+          throw new InventorySyncError("Offline session removed during scan.");
+        const [location] = await tx.$queryRaw<MonitoredLocation[]>`
+          SELECT * FROM "MonitoredLocation" WHERE "shopDomain" = ${settings.shopDomain}
+          AND "locationGid" = ${settings.locationGid} FOR UPDATE
+        `;
+        if (
+          !location?.isActive ||
+          location.version !== settings.monitored.version
+        )
+          throw new InventorySyncError(
+            "Location changed during scan. Retry sync.",
+          );
       }
 
       const scope = {
@@ -132,6 +208,11 @@ export function commitInventorySync(
           byItem.get(level.inventoryItemGid) ?? null,
           saved,
           syncedAt,
+          settings.monitored &&
+            (!settings.monitored.baselineAlertsCompletedAt ||
+              !byItem.get(level.inventoryItemGid)?.isCurrent)
+            ? "BASELINE"
+            : "INVENTORY_TRANSITION",
         );
         alertsCreated += alerts.created;
         alertsResolved += alerts.resolved;
@@ -142,16 +223,37 @@ export function commitInventorySync(
         where: { ...missing, isCurrent: true },
         data: { isCurrent: false },
       });
-      alertsResolved += await resolveActiveAlerts(tx, scope, missing, syncedAt);
-      await tx.shopSettings.update({
-        where: { shopDomain: settings.shopDomain },
-        data: {
-          lastSyncedAt: syncedAt,
-          updatedAt: new Date(
-            Math.max(syncedAt.getTime(), current.updatedAt.getTime() + 1),
-          ),
-        },
-      });
+      alertsResolved += await resolveActiveAlerts(
+        tx,
+        scope,
+        missing,
+        syncedAt,
+        "INVENTORY_UNAVAILABLE",
+      );
+      if (settings.monitored) {
+        await tx.monitoredLocation.update({
+          where: { shopDomain_locationGid: scope },
+          data: {
+            lastSyncedAt: syncedAt,
+            lastSyncAttemptAt: startedAt,
+            lastSyncError: null,
+            baselineCompletedAt:
+              settings.monitored.baselineCompletedAt ?? syncedAt,
+            baselineAlertsCompletedAt: syncedAt,
+            syncStatus: "READY",
+            version: { increment: 1 },
+          },
+        });
+      } else
+        await tx.shopSettings.update({
+          where: { shopDomain: settings.shopDomain },
+          data: {
+            lastSyncedAt: syncedAt,
+            updatedAt: new Date(
+              Math.max(syncedAt.getTime(), current.updatedAt.getTime() + 1),
+            ),
+          },
+        });
       return {
         itemCount: levels.length,
         staleCount: stale.count,

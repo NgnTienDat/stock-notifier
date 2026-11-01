@@ -15,7 +15,7 @@ afterAll(() => db.$disconnect());
 
 // Opt-in, read-only probe: live Shopify + PostgreSQL, with stored offline auth context.
 test.skipIf(env.SHOPIFY_LIVE_TEST !== "1")(
-  "settings loader and inventory-level service read live Shopify using the saved offline session",
+  "settings loader and paginated inventory service read live Shopify using the saved offline session",
   async () => {
     const stored = await db.session.findFirst({
       where: { isOnline: false },
@@ -49,28 +49,22 @@ test.skipIf(env.SHOPIFY_LIVE_TEST !== "1")(
       } as LoaderFunctionArgs);
       expect(view.error).toBeNull();
       expect(Array.isArray(view.locations)).toBe(true);
-      const settings = await db.shopSettings.findUnique({
-        where: { shopDomain: session.shop },
-      });
-      const saved = settings?.locationGid
-        ? await db.inventoryLevel.findFirst({
-            where: {
-              shopDomain: session.shop,
-              locationGid: settings.locationGid,
-              isCurrent: true,
-            },
-            select: { locationGid: true, inventoryItemGid: true },
-          })
-        : null;
-      if (!saved)
-        throw new Error(
-          "Select a location and run initial sync before the inventory live probe.",
-        );
-      const level = await createShopifyGraphqlService(
-        context,
-      ).getInventoryLevel(saved.locationGid, saved.inventoryItemGid);
-      expect(level?.inventoryItemGid).toBe(saved.inventoryItemGid);
-      expect(level?.inventoryLevelGid).toContain("?inventory_item_id=");
+      console.info("Live active locations read:", view.locations.length);
+      const firstLocation = view.locations[0];
+      if (firstLocation) {
+        const levels = await createShopifyGraphqlService(
+          context,
+        ).getInventoryLevels(firstLocation.locationGid);
+        for (const level of levels) {
+          expect(level.locationGid).toBe(firstLocation.locationGid);
+          expect(level.inventoryLevelGid).toContain("?inventory_item_id=");
+          expect(Number.isInteger(level.availableQuantity)).toBe(true);
+        }
+        console.info("Read-only live probe", {
+          activeLocations: view.locations.length,
+          inventoryItemsRead: levels.length,
+        });
+      }
     } catch (error) {
       if (error instanceof Response)
         throw new Error(

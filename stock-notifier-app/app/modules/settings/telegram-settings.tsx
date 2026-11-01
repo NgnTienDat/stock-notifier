@@ -98,6 +98,11 @@ export function TelegramSettings({
           Automatic delivery requires the local Telegram worker to be running.
           Send test message sends one request immediately.
         </s-paragraph>
+        <s-paragraph>
+          Immediate: inventory transitions. Digest: new baseline and
+          threshold-change batches. Historical PENDING alerts are never
+          automatically enrolled.
+        </s-paragraph>
       </s-stack>
     </s-section>
   );

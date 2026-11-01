@@ -7,10 +7,12 @@ import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import db from "../app/db.server";
 import { authenticate } from "../app/shopify.server";
 import { action } from "../app/routes/app.inventory-sync";
+import { InventorySyncError } from "../app/modules/inventory/inventory-sync.service.server";
 import {
-  InventorySyncError,
-  syncInventory,
-} from "../app/modules/inventory/inventory-sync.service.server";
+  commitInventorySync,
+  getInventorySyncSettings,
+} from "../app/modules/inventory/inventory.repository.server";
+import { createShopifyGraphqlService } from "../app/modules/shopify/graphql/shopify-graphql.server";
 import { saveLocationSettings } from "../app/modules/settings/settings.repository.server";
 import {
   INVENTORY_ITEM_QUERY,
@@ -82,6 +84,10 @@ afterEach(async () => {
       where: { inventoryLevel: { shopDomain: shops } },
     }),
     db.inventoryLevel.deleteMany({ where: { shopDomain: shops } }),
+    db.monitoredLocation.deleteMany({
+      where: { shopDomain: { in: [shop, otherShop] } },
+    }),
+    db.session.deleteMany({ where: { shop: { in: [shop, otherShop] } } }),
     db.shopSettings.deleteMany({ where: { shopDomain: shops } }),
   ]);
   vi.clearAllMocks();
@@ -220,7 +226,7 @@ test("all inventory/variant pages finish before any write; repeat upserts preser
       if (!response) throw new Error("Unexpected extra GraphQL request");
       return response;
     });
-    const result = await syncInventory(context());
+    const result = await scanLegacyFixture(context());
     expect(responses).toHaveLength(0);
     return result;
   }
@@ -295,7 +301,9 @@ test.each(["inventory", "variants"])(
           }),
         ),
       );
-    await expect(syncInventory(context())).rejects.toThrow("Page unavailable");
+    await expect(scanLegacyFixture(context())).rejects.toThrow(
+      "Page unavailable",
+    );
     expect(await state()).toEqual(before);
   },
 );
@@ -306,7 +314,7 @@ test("failure at the final settings write rolls back upserts, invalidation and a
   const before = await state();
   graphql.mockResolvedValueOnce(page([level("101", 0), level("102", -1)]));
   failure.enabled = true;
-  await expect(syncInventory(context())).rejects.toThrow(
+  await expect(scanLegacyFixture(context())).rejects.toThrow(
     "Injected final sync write failure",
   );
   failure.enabled = false;
@@ -334,7 +342,7 @@ test.each(["empty", "ineligible"])(
     graphql.mockResolvedValueOnce(
       page(kind === "empty" ? [] : [untracked, level("102", null)]),
     );
-    const result = await syncInventory(context());
+    const result = await scanLegacyFixture(context());
     expect(result).toMatchObject({
       itemCount: 0,
       staleCount: 1,
@@ -385,7 +393,7 @@ test.each([false, true])(
       entered.resolve();
       return release.promise;
     });
-    const pending = expect(syncInventory(context())).rejects.toBeInstanceOf(
+    const pending = expect(scanLegacyFixture(context())).rejects.toBeInstanceOf(
       InventorySyncError,
     );
     await entered.promise;
@@ -408,7 +416,7 @@ test.each([false, true])(
     ).toBeNull();
     if (returnToA) {
       graphql.mockResolvedValueOnce(page([level("101", 0)]));
-      expect(await syncInventory(context())).toMatchObject({
+      expect(await scanLegacyFixture(context())).toMatchObject({
         baseline: true,
         itemCount: 1,
       });
@@ -435,14 +443,14 @@ test("a slower concurrent sync cannot overwrite the winning scan, even with an u
     entered.resolve();
     return release.promise;
   });
-  const pending = expect(syncInventory(context())).rejects.toBeInstanceOf(
+  const pending = expect(scanLegacyFixture(context())).rejects.toBeInstanceOf(
     InventorySyncError,
   );
   await entered.promise;
   const fast = vi
     .fn<AdminGraphqlClient>()
     .mockResolvedValueOnce(page([level("101", 8)]));
-  await syncInventory(context(fast));
+  await scanLegacyFixture(context(fast));
   const winner = await state();
   release.resolve(page([level("102", 0)]));
   await pending;
@@ -465,7 +473,7 @@ test.each(["present", "missing", "same-millisecond-missing"])(
       entered.resolve();
       return release.promise;
     });
-    const pending = expect(syncInventory(context())).rejects.toBeInstanceOf(
+    const pending = expect(scanLegacyFixture(context())).rejects.toBeInstanceOf(
       InventorySyncError,
     );
     await entered.promise;
@@ -488,7 +496,29 @@ test.each(["present", "missing", "same-millisecond-missing"])(
 
 test("the sync action ignores forged shop/location fields and uses authenticated settings", async () => {
   const foreign = await seed("101", otherShop, locationA);
-  graphql.mockResolvedValueOnce(page([level("101", 0)]));
+  await db.session.create({
+    data: {
+      id: context().session.id,
+      shop,
+      state: "",
+      isOnline: false,
+      accessToken: "fixture-only",
+    },
+  });
+  graphql.mockImplementation(async (query) =>
+    String(query).includes("StockPulseLocations")
+      ? new Response(
+          JSON.stringify({
+            data: {
+              locations: {
+                nodes: [{ id: locationA, name: "A", isActive: true }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          }),
+        )
+      : page([level("101", 0)]),
+  );
   const auth = context();
   vi.mocked(authenticate.admin).mockResolvedValue(
     auth as unknown as Awaited<ReturnType<typeof authenticate.admin>>,
@@ -507,7 +537,11 @@ test("the sync action ignores forged shop/location fields and uses authenticated
   } as ActionFunctionArgs);
   expect(result.data.error).toBeNull();
   expect(authenticate.admin).toHaveBeenCalledWith(request);
-  expect(graphql.mock.calls[0][1]?.variables).toMatchObject({
+  expect(
+    graphql.mock.calls.find(([query]) =>
+      String(query).includes("StockPulseLocationInventory"),
+    )?.[1]?.variables,
+  ).toMatchObject({
     locationId: locationA,
   });
   expect(
@@ -524,3 +558,13 @@ test("the sync action ignores forged shop/location fields and uses authenticated
     }),
   ).toBe(0);
 });
+
+// Keep pre-discovery compatibility coverage for the existing single-location repository.
+async function scanLegacyFixture(auth: ReturnType<typeof context>) {
+  const startedAt = new Date();
+  const settings = (await getInventorySyncSettings(auth.session.shop))!;
+  const locationGid = settings.locationGid!;
+  const levels =
+    await createShopifyGraphqlService(auth).getInventoryLevels(locationGid);
+  return commitInventorySync({ ...settings, locationGid }, levels, startedAt);
+}

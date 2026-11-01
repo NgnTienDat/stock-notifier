@@ -1,6 +1,6 @@
 # StockNotifier — MVP Product Requirements
 
-**Mục tiêu:** Shopify embedded app chạy local trên một Development Store trong **3 ngày**. Merchant chọn một location, đồng bộ tồn kho, theo dõi low-stock và nhận Telegram alert. Không yêu cầu public release/deploy production.
+**Mục tiêu:** Shopify embedded app chạy local trên một Development Store. Sau M2, tự động discovery/sync tất cả active locations, theo dõi low-stock và nhận Telegram transition alerts. Không yêu cầu public release/deploy production.
 
 Tài liệu liên quan: [Architecture](ARCHITECTURE.md) · [Database](DATABASE.md) · [Implementation Plan](IMPLEMENTATION_PLAN.md) · [Acceptance Criteria](ACCEPTANCE_CRITERIA.md).
 
@@ -9,18 +9,20 @@ Tài liệu liên quan: [Architecture](ARCHITECTURE.md) · [Database](DATABASE.m
 | Ưu tiên | Chức năng | Kết quả tối thiểu |
 | --- | --- | --- |
 | P0 | Shopify auth | Cài/mở app trong Development Store, bảo vệ dữ liệu theo shop |
-| P0 | Location & sync | Chọn **một location đang theo dõi**; full sync các tracked Inventory Items và `available` quantity |
+| P0 | Location & sync | Tự động theo dõi tất cả active locations; mỗi location có baseline/full sync riêng |
 | P0 | Webhook | Nhận `inventory_levels/update`, `connect`, `disconnect`; xác thực, lọc location, dedup và đọc lại GraphQL để chống stale payload |
 | P0 | Low-stock | Threshold mặc định 5, áp dụng toàn shop; quản lý chuyển trạng thái và active alert |
 | P0 | Telegram | Một Bot Token trên server + một Chat ID/shop; test và gửi khi mới vào low-stock |
 | P0 | Embedded UI | Dashboard inventory + Settings (location, threshold, Telegram, sync) |
 | P1 | Alert history | Danh sách alert, trạng thái `ACTIVE/RESOLVED`, `PENDING/SENT/FAILED` |
 
-Không làm: multi-location monitoring đồng thời, threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue/Redis, microservices, hosting production. Dùng auth/session chính thức của Shopify.
+M3: inventory webhooks xử lý mọi active MonitoredLocation; worker đọc lại GraphQL, xử lý lifecycle/retry/reconciliation. M4 bổ sung Dashboard, Alert history, Settings theo `stock-notifier-app/stocknotifier-dashboard-preview.html` đã duyệt và Telegram digest. Sidebar/topbar Shopify do host cung cấp; không sao chép shell giả lập.
+
+Không làm: threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue service/Redis, microservices, hosting production. Chỉ mở rộng WebhookEvent làm hàng đợi PostgreSQL. Dùng auth/session chính thức của Shopify.
 
 ## 2. Luồng sử dụng
 
-1. Merchant cài app, chọn location và nhập Telegram Chat ID.
+1. Merchant cài app và nhập Telegram Chat ID; worker discovery tất cả active locations, không chọn location để bật/tắt monitoring.
 2. Merchant gửi test message, chạy **Sync** lần đầu; app lưu snapshot inventory trong PostgreSQL.
 3. Khi inventory thay đổi, Shopify gọi webhook; app cập nhật quantity, đánh giá trạng thái và ghi alert nếu mới chuyển sang low-stock.
 4. Telegram nhận thông báo; merchant xem tồn kho và alert trên embedded app.
@@ -36,11 +38,14 @@ Không làm: multi-location monitoring đồng thời, threshold từng variant,
 - `NORMAL → NORMAL`: không tạo alert.
 - Sau khi restock về `NORMAL`, lần giảm tiếp theo tạo một alert mới.
 - **Full Sync:** scan đủ mọi trang trước khi ghi snapshot. Chỉ sau khi scan thành công toàn bộ mới commit snapshot, đánh dấu `isCurrent = false` cho dữ liệu không còn hợp lệ, resolve active alerts tương ứng và cập nhật `lastSyncedAt`; không xóa lịch sử. Scan lỗi không ghi một phần hoặc thay đổi mốc sync thành công trước đó.
-- **Initial sync thiết lập baseline:** hiển thị các items đang low-stock nhưng không tạo alert/gửi Telegram. Các lần **Sync Now sau đó** dùng cùng quy tắc transition để phát hiện stock đã thay đổi khi webhook bị lỡ.
-- Đổi threshold chỉ thiết lập lại baseline `isLowStock` cho items current tại selected location sau baseline thành công; resolve active alerts không còn hợp lệ, không tạo alert/gửi Telegram chỉ vì đổi cấu hình. Item mới hoặc trở lại current cần baseline riêng trước khi đánh giá transition.
-- **Đổi location:** atomically resolve active alerts của location cũ, đánh dấu snapshots cũ `isCurrent = false`, chuyển selected location và reset `lastSyncedAt = null`. Sau đó initial sync location mới tạo baseline, không tạo alert/gửi Telegram, kể cả khi chọn lại location từng theo dõi. Trước khi baseline thành công, không đánh giá transition/gửi Telegram tự động. Giữ lịch sử alert và ngữ cảnh location cũ.
-- Dashboard và đánh giá threshold chỉ dùng items `isCurrent = true` của selected location sau khi baseline thành công.
+- **Baseline M2:** low-stock tạo ACTIVE alert origin BASELINE, không lên lịch gửi riêng lẻ. Lần sync đầu sau nâng cấp catch-up idempotent cho location M1: bổ sung alert low còn thiếu, giữ nguyên ACTIVE/history. Item mới hoặc trở lại current cũng nhận baseline. Các lần sync sau dùng INVENTORY_TRANSITION như webhook.
+- Threshold chung toàn shop: tính lại current items tại monitored active locations; tăng làm item mới low tạo THRESHOLD_CHANGE, giảm resolve alerts không còn hợp lệ. M4 gom alerts mới của cùng operation vào một digest, không gửi từng alert, không gửi nếu không tạo alert mới.
+- Sau discovery, đổi lựa chọn legacy chỉ thay preference hiển thị/compatibility, không resolve alert, vô hiệu snapshot hoặc reset baseline bất kỳ monitored location nào. Discovery đầy đủ xác minh location không còn active mới vô hiệu snapshots/resolve alerts liên quan; lỗi discovery giữ nguyên dữ liệu.
+- Dashboard mặc định All locations, location selector chỉ là view filter qua URL; không đổi Settings/monitoring/baseline/alerts hoặc tự sync. KPI/table dùng snapshots current thuộc locations active, baseline hoàn tất; search/pagination phía server và scope theo shop đã xác thực. Lịch sử giữ cả inactive locations. Products đếm productGid duy nhất; items/low stock đếm snapshot item + location, không nhân theo variants.
+- Digest baseline chỉ gắn alerts mới khi Bot Token và Chat ID đã có; gom theo shop/destination trong cửa sổ 30 giây, không chờ location lỗi vô hạn. Location baseline muộn hoặc item/new location mới nhận batch bổ sung. Sync lặp không tạo lại alert/batch. Migration không enroll historical PENDING; cấu hình Telegram sau không gửi ngược lịch sử.
+- Digest đọc lại current eligibility trước mỗi lần gửi, bỏ alerts đã resolve/inactive; batch không còn eligible bị CANCELLED, không giả SENT/FAILED trên alert. Gửi plain text một message tối đa 4096 ký tự, chi tiết giới hạn nhưng tổng số chính xác. Chỉ sau API ok:true mới ghi SENT/notifiedAt cho batch và eligible members. Retry/lease/token bền vững trong PostgreSQL; không cam kết exactly-once khi crash sau API success.
 - Không có dữ liệu tracking/quantity tại location thì không coi là quantity `0`.
+- Deactivate chỉ vô hiệu snapshots/resolve alerts tại location đó, giữ history và resolution reason. Reactivate bắt đầu baseline mới; rename giữ baseline. Delete để lại tombstone, không được resurrect bởi job/scan cũ. Reconciliation phục hồi trạng thái hiện tại, không tái tạo được mọi transition trung gian khi offline.
 
 ## 4. Telegram message
 

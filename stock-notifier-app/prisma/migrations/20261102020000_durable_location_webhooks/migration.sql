@@ -1,0 +1,15 @@
+BEGIN;
+CREATE TYPE "AlertResolutionReason" AS ENUM ('STOCK_RECOVERED', 'INVENTORY_UNAVAILABLE', 'LOCATION_DEACTIVATED', 'LOCATION_DELETED', 'MONITORING_STOPPED');
+ALTER TABLE "InventoryAlert" ADD COLUMN "resolutionReason" "AlertResolutionReason";
+ALTER TABLE "MonitoredLocation" ADD COLUMN "generation" BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN "deletedAt" TIMESTAMPTZ(3);
+ALTER TABLE "WebhookEvent" ALTER COLUMN "processedAt" DROP NOT NULL,
+  ALTER COLUMN "processedAt" DROP DEFAULT,
+  ADD COLUMN "receivedAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN "topic" TEXT, ADD COLUMN "eventId" TEXT,
+  ADD COLUMN "locationGid" TEXT, ADD COLUMN "inventoryItemGid" TEXT,
+  ADD COLUMN "generation" BIGINT, ADD COLUMN "attempts" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "nextAttemptAt" TIMESTAMPTZ(3), ADD COLUMN "leaseUntil" TIMESTAMPTZ(3),
+  ADD COLUMN "leaseToken" TEXT, ADD COLUMN "lastError" TEXT, ADD COLUMN "result" TEXT;
+CREATE INDEX "WebhookEvent_nextAttemptAt_idx" ON "WebhookEvent" ("nextAttemptAt");
+COMMIT;

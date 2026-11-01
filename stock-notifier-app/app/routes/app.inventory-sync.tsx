@@ -10,7 +10,20 @@ import {
 export async function action({ request }: ActionFunctionArgs) {
   const context = await authenticate.admin(request);
   try {
-    return data({ result: await syncInventory(context), error: null });
+    const values = (await request.formData()).getAll("retryLocationGid");
+    if (
+      values.length > 1 ||
+      (values.length === 1 &&
+        (typeof values[0] !== "string" || !values[0].trim()))
+    )
+      return data(
+        { result: null, error: "Invalid retry location." },
+        { status: 400 },
+      );
+    return data({
+      result: await syncInventory(context, values[0] as string | undefined),
+      error: null,
+    });
   } catch (error) {
     if (
       error instanceof Response &&

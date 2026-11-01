@@ -82,7 +82,7 @@ test("real Shopify authentication rejects invalid HMAC before session lookup or 
 test("real Shopify authentication passes verified shop, topic and delivery ID to service", async () => {
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.mocked(authenticate.webhook).mockImplementation(app.authenticate.webhook);
-  vi.mocked(processInventoryWebhook).mockResolvedValue("session_missing");
+  vi.mocked(processInventoryWebhook).mockResolvedValue("queued");
   expect(
     (await action({ request: request(true) } as ActionFunctionArgs)).status,
   ).toBe(200);
@@ -92,6 +92,7 @@ test("real Shopify authentication passes verified shop, topic and delivery ID to
       topic: "INVENTORY_LEVELS_UPDATE",
       webhookId: "delivery-1",
     }),
+    null,
   );
 });
 test("payload validation rejects invalid topics, missing delivery IDs and unsafe/truncated numeric IDs", () => {
@@ -127,4 +128,31 @@ test("payload validation rejects invalid topics, missing delivery IDs and unsafe
   expect(() =>
     parseInventoryWebhook("INVENTORY_LEVELS_UPDATE", {}, ""),
   ).toThrow();
+});
+
+test("lifecycle payload preserves exact 64-bit location ID and needs no inventory item", () => {
+  expect(
+    parseInventoryWebhook(
+      "LOCATIONS_DELETE",
+      decodeInventoryWebhookBody('{"id":271878346596884015}'),
+      "delivery",
+    ),
+  ).toEqual({
+    locationGid: "gid://shopify/Location/271878346596884015",
+    inventoryItemGid: undefined,
+  });
+  expect(() =>
+    parseInventoryWebhook("LOCATIONS_DELETE", {}, "delivery"),
+  ).toThrow();
+});
+
+test("enqueue failure returns retryable 503 after real authentication", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(authenticate.webhook).mockImplementation(app.authenticate.webhook);
+  vi.mocked(processInventoryWebhook).mockRejectedValueOnce(
+    Error("Database unavailable"),
+  );
+  expect(
+    (await action({ request: request(true) } as ActionFunctionArgs)).status,
+  ).toBe(503);
 });

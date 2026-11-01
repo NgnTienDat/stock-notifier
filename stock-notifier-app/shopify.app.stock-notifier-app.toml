@@ -13,6 +13,10 @@ api_version = "2026-07"
   topics = [ "inventory_levels/update", "inventory_levels/connect", "inventory_levels/disconnect" ]
 
   [[webhooks.subscriptions]]
+  uri = "/webhooks/inventory"
+  topics = [ "locations/create", "locations/activate", "locations/deactivate", "locations/delete", "locations/update" ]
+
+  [[webhooks.subscriptions]]
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
