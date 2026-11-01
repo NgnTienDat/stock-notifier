@@ -74,6 +74,65 @@ Manual Alert Engine check: on the selected Development Store location, set thres
 
 The new tests target hidden failure/concurrency behavior: partial inventory/variant scans, transaction rollback after upserts and cleanup, tenant/location isolation, simultaneous syncs, same-millisecond location changes, stale writes and baseline/history preservation. Existing GraphQL unit tests cover pagination; no new UI interaction tests were added.
 
+### StockPulse inventory webhooks (Step 7)
+
+Both app TOMLs pin `[webhooks].api_version = "2026-07"` and subscribe `inventory_levels/update`, `inventory_levels/connect` and `inventory_levels/disconnect` to `/webhooks/inventory`. System uninstall/scopes subscriptions remain; the default file's existing product-price events subscription is unchanged. Use the active named configuration (`shopify.app.stock-notifier-app.toml`); CLI validation of `shopify.app.toml` currently returns 404 for its old client_id. These are separate Shopify apps; do not copy their credentials between them.
+
+The route calls `authenticate.webhook(request)` before parsing business identifiers or accessing application data. It retains exact numeric IDs from the authenticated raw JSON, scopes every change to the authenticated shop/selected location, and uses `X-Shopify-Webhook-Id` (not Event-Id) for deduplication. All three topics reread the current item/level via GraphQL with complete variants pagination and the full opaque level GID. Payload quantity/timestamp never overwrite current GraphQL data. A delayed disconnect after a reconnect therefore retains the current connected level. Missing/deleted/untracked/inactive levels invalidate the snapshot and resolve ACTIVE alerts, preserving quantity/history rather than inventing zero. Missing available quantity or incomplete API results fail the request.
+
+GraphQL runs before opening a DB transaction. The commit locks ShopSettings, rechecks the offline session and captured updatedAt/location, then applies inventory, shared Alert Engine transitions and WebhookEvent atomically. Duplicate delivery IDs return 200; version conflicts, API/DB errors and timeouts return 503 without consuming the delivery ID. A newer stored Shopify timestamp wins over an older API read. Inventory changes advance ShopSettings.updatedAt monotonically, invalidating overlapping full scans and other webhook reads; lastSyncedAt remains exclusively the successful full-sync marker. New/reconnected items and events before the first full sync cannot create alerts. Uninstall session deletion uses the same shop lock. Missing sessions/settings are acknowledged and logged as ignored, without recording a processed delivery; reopen the installed app and use Sync now to reconcile after restoring a session.
+
+The route **awaits** durable processing; there is no fire-and-forget work. API reads share a 2.5-second abort signal across variant pages, with no in-request retry/backoff; DB commits have a 500ms pool/lock wait, 1s statement timeout and 1.5s transaction timeout. These budgets reduce risk but do not guarantee Shopify's five-second response deadline: SDK token refresh, cold starts, tunnel latency and bursts can exceed it. Shopify retries failed/time-out deliveries; deduplication makes post-commit retries safe. Minimal MVP recovery is to keep the dev tunnel running, refresh expired auth in Shopify Admin, inspect failed deliveries and run Sync now. Large variant lists that repeatedly exceed the budget require manual full sync, not an early 200 response. Telegram delivery is deferred to Step 8.
+
+Real Development Store verification (changes inventory only when you perform these steps):
+
+1. Run `shopify app config validate --config stock-notifier-app --json`, then `npm run dev -- --config stock-notifier-app`. Wait for the CLI to apply dev subscriptions; reopen the embedded app to refresh its offline session. No production deploy is needed.
+2. Select a location, set threshold 5, set one tracked item's Available quantity to 6 and run a full Sync now baseline. Keep the tunnel online.
+3. Change Available in Shopify to 5 → 3 → 8 → 4, allowing each delivery to finish. **Do not click Sync now between changes.** In Prisma Studio refresh InventoryLevel, InventoryAlert and WebhookEvent: quantity/flags update, one ACTIVE alert persists at 3, resolves at 8, and a new alert appears at 4. ShopSettings.lastSyncedAt stays unchanged. The server logs each authenticated delivery ID and result.
+4. Stop stocking the item at the selected location to trigger disconnect: expect isCurrent=false and ACTIVE alerts resolved. Stock it again to trigger connect: the first snapshot is baseline and creates no alert. Changes at another location must not affect selected-location snapshots.
+5. In Shopify's webhook delivery diagnostics, redeliver the same delivery if available: expect no duplicate WebhookEvent/ACTIVE alert. Replay through Shopify CLI creates a signed test delivery, but sample IDs might not belong to this store and do not prove a live inventory transition. Avoid store Settings → Notifications webhooks; those do not use this app's secret.
+6. For failures, inspect HTTP status and the `Inventory webhook retry required` log. After recovery, confirm the retried delivery creates its event exactly once. Use Sync now to reconcile exhausted retries/missed intermediate transitions. Tests cover concurrent delivery, rollback, lock contention, stale reads, uninstall and location/sync races without mutating merchant inventory.
+
+Official references: [2026-07 topics/payloads](https://shopify.dev/docs/api/webhooks/2026-07), [React Router webhook authentication](https://shopify.dev/docs/api/shopify-app-react-router/latest/authenticate/webhook), [delivery verification and deadlines](https://shopify.dev/docs/apps/build/webhooks/verify-deliveries), [InventoryItem.inventoryLevel](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/InventoryItem).
+
+Manual Development Store verification:
+
+1. Run `docker compose up -d --wait`, `npm run dev`, and open the embedded app. In another terminal run `npm exec -- prisma studio`.
+2. Save an active location in **Settings** and click **Sync now**. In Studio, inspect the authenticated shop's ShopSettings and InventoryLevel rows: `lastSyncedAt` is set, the saved location matches, variant JSON is an array, `isCurrent = true`, and `isLowStock` matches `availableQuantity <= lowStockThreshold`. An initial baseline creates no alerts.
+3. Click **Sync now** again. Existing item rows retain their IDs and the composite key stays unique. Edit available inventory in Shopify at that location, sync again, and compare quantities/SKU with Studio.
+4. Stop tracking or disconnect an item from the location, then sync: its snapshot remains with `isCurrent = false`, and alert history is retained. Other shops/locations remain unchanged.
+5. Change location, confirm `lastSyncedAt = null`, then sync. Return to the previous location and repeat; each first sync is a fresh baseline. Overlapping sync/location changes can require a retry.
+
+### StockPulse location selection (Step 4)
+
+Open **Settings** in the embedded app navigation (`/app/settings`). Select one active location and save. Both the loader and action use `authenticate.admin(request)`; the action rechecks the current store's active Shopify locations, ignores client-supplied shop/name fields, and saves Shopify's location name to PostgreSQL.
+
+Reloading retains the saved choice. API failures retain the existing selection and show a retry action; a removed/inactive saved location is shown with a warning. Changing location locks the shop's settings row and atomically resolves only the old location's ACTIVE alerts, marks its snapshots `isCurrent = false`, and resets `lastSyncedAt`. Alert history and quantities remain intact. Saving the same location only refreshes its name and preserves the baseline. Saving does not run inventory sync or send Telegram.
+
+Use `127.0.0.1` in the local `DATABASE_URL`, matching Compose's port binding. Concurrent Prisma transaction tests failed to acquire a connection through `localhost` on the inspected Windows setup and passed through `127.0.0.1`.
+
+```powershell
+npm run test:unit
+npm run test:integration
+npm run typecheck
+npm run lint
+npm run build
+```
+
+The location integration suite executes loader/action with the real GraphQL service, mocked Shopify auth/responses and real local PostgreSQL. It verifies persistence with a fresh Prisma client, tenant/location isolation, rollback, concurrent selections and A→B→A without reusing a baseline. It only cleans up its uniquely named fixture shops.
+
+For an optional **read-only live loader probe**, first open the app with `npm run dev` so Shopify refreshes the offline session. In another PowerShell terminal:
+
+```powershell
+$env:SHOPIFY_LIVE_TEST = '1'
+npm exec -- vitest run tests/location-settings.live.test.ts
+Remove-Item Env:SHOPIFY_LIVE_TEST
+```
+
+This probe injects the saved offline session context at the authentication boundary and calls Shopify GraphQL through the actual loader and single-level read service. Select a location and run initial sync first so the probe can choose an existing item. It reads PostgreSQL but does not change merchant settings or inventory. It does not test browser/webhook authentication or automatically refresh an expired token. Normal `npm test` skips this network-dependent probe.
+
+For the browser smoke test, select a location in Settings, save, reload and confirm the name remains selected. Change to a different location and verify `ShopSettings.locationGid/locationName`, `lastSyncedAt = null`, old snapshots no longer current and old ACTIVE alerts resolved. No sync or Telegram should occur.
+
 ### StockPulse location selection (Step 4)
 
 Open **Settings** in the embedded app navigation (`/app/settings`). Select one active location and save. Both the loader and action use `authenticate.admin(request)`; the action rechecks the current store's active Shopify locations, ignores client-supplied shop/name fields, and saves Shopify's location name to PostgreSQL.
@@ -136,7 +195,7 @@ Manual verification in Shopify GraphiQL:
 
 All three queries were checked with Shopify AI Toolkit against the 2026-07 schema. Field references: [InventoryItem](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/InventoryItem), [InventoryLevel](https://shopify.dev/docs/api/admin-graphql/2026-07/objects/InventoryLevel), [rate limits](https://shopify.dev/docs/apps/build/apis/graphql-admin/rate-limits).
 
-Existing config discrepancy outside Step 3: both app TOML files currently use webhook API `2027-01`, whereas runtime/codegen and the approved docs use `2026-07`. This step does not change webhook configuration or the existing demo routes.
+Step 7 aligns both TOML webhook versions with runtime/codegen `2026-07`. The default file's separate demo `[events]` subscription retains its existing API version; it is not an inventory webhook subscription.
 
 ### Authenticating and querying data
 

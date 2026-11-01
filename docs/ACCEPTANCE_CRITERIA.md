@@ -12,7 +12,7 @@
 | AC04 | P0 | Sync đủ tracked Inventory Items của location và toàn bộ variants qua pagination; một snapshot/item, metadata variants trong JSON, SKU/available đúng | Fixture một item có nhiều variants + đối chiếu Shopify Admin/DB |
 | AC05 | P0 | Sync lặp không tạo duplicate; item thiếu available không được coi là `0`; scan thành công mới atomically cập nhật snapshots/`isCurrent`/`lastSyncedAt`, giữ lịch sử | Sync 2 lần; scan lỗi giữa chừng không đổi dữ liệu; item bị xóa/tắt tracking/ngắt location được đánh dấu không còn current sau full scan thành công |
 | AC06 | P0 | Runtime/codegen/webhooks đều pin `2026-07`; webhook thật tới được local tunnel; HMAC sai bị reject | Kiểm tra 3 cấu hình + Shopify delivery + HTTP test |
-| AC07 | P0 | Bỏ qua location khác, webhook trùng, payload cũ hơn; webhook không cần mở dashboard | Gửi fixture + so sánh DB |
+| AC07 | P0 | Bỏ qua location khác và delivery trùng; payload cũ không ghi đè trạng thái GraphQL hiện tại; disconnect cũ không vô hiệu hóa level đã reconnect; webhook không cần mở dashboard | Gửi fixture + so sánh DB; integration test race/rollback |
 | AC08 | P0 | `quantity <= threshold` là low; `0` hiển thị out-of-stock, không có alert riêng | Unit tests: 0, 5, 6 với threshold 5 |
 | AC09 | P0 | `NORMAL→LOW` tạo một active alert/item, không nhân theo variants; tiếp tục low không tạo alert khác; restock resolve; giảm tiếp tạo alert mới | Chuỗi webhook 6→5→3→8→4 trên item có nhiều variants; một message/transition |
 | AC10 | P0 | Concurrent duplicate/transition không tạo hai active alerts | Integration test transaction/race |

@@ -18,7 +18,7 @@
 
 **Làm:**
 
-1. Đăng ký `inventory_levels/update` version `2026-07`; thử delivery thật từ Shopify.
+1. Đăng ký `inventory_levels/update`, `inventory_levels/connect`, `inventory_levels/disconnect` version `2026-07`; thử delivery thật từ Shopify.
 2. Xác thực HMAC theo template; lọc shop/location; unique delivery ID; chặn stale updates.
 3. Dùng transaction cho inventory update và state transition; bảo vệ một active alert/item dù có nhiều variants. Hoàn thiện transitions của Full Sync/threshold và đổi location: resolve alerts cũ, reset `lastSyncedAt`, baseline mới không gửi Telegram.
 4. Gửi Telegram sau commit; lưu `SENT/FAILED`; làm `Send Test Notification`.

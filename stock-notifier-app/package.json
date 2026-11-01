@@ -3,8 +3,8 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
-    "test:unit": "vitest run tests/shopify-graphql.test.ts tests/location-settings.test.ts tests/alert-engine.test.ts",
-    "test:integration": "vitest run tests/database.test.ts tests/location-settings.integration.test.ts tests/inventory-sync.integration.test.ts tests/alert-engine.integration.test.ts",
+    "test:unit": "vitest run tests/shopify-graphql.test.ts tests/location-settings.test.ts tests/alert-engine.test.ts tests/inventory-webhook.test.ts",
+    "test:integration": "vitest run tests/database.test.ts tests/location-settings.integration.test.ts tests/inventory-sync.integration.test.ts tests/alert-engine.integration.test.ts tests/inventory-webhook.integration.test.ts",
     "build": "react-router build",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
