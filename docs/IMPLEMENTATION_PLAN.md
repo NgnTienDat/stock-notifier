@@ -1,5 +1,7 @@
 # StockNotifier — 3-Day Implementation Plan
 
+**M3 hiện tại:** WebhookEvent làm durable PostgreSQL jobs; tái sử dụng inventory worker/GraphQL/Alert Engine cho mọi active location. Bổ sung lifecycle, generation/tombstone/resolution reason và reconciliation cấu hình được. Gate tại ACCEPTANCE_CRITERIA, manual A–F trong README. Roadmap chọn một location bên dưới là lịch sử; PostgreSQL jobs là ngoại lệ M3 đã duyệt, không external queue. Dashboard/filter/digests thuộc M4.
+
 **Đích đến:** MVP chạy **local** qua Shopify CLI tunnel, cài vào một Development Store, có webhook và Telegram thật. **Không deploy production, không quay demo video bắt buộc, không mở rộng scope.** P0 phải xong trước P1.
 
 ## Ngày 1 — Foundation + Inventory Sync

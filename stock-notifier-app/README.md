@@ -48,7 +48,65 @@ npm run lint
 npm run build
 ```
 
-### Phase M2: automatic discovery and multi-location sync
+### Phase M3: multi-location webhooks, lifecycle and reconciliation
+
+This section supersedes the historical selected-location webhook behavior below. All active MonitoredLocation records are handled independently; ShopSettings.locationGid is only a legacy preference. Existing GraphQL pagination/rate-limit handling, per-location sync, shared Alert Engine and Telegram worker are reused. No new service or dependency is required.
+
+Both TOMLs retain system webhooks and API 2026-07, adding locations/create, activate, update, deactivate and delete alongside inventory_levels/update, connect and disconnect at `/webhooks/inventory`. The required scopes remain read_inventory, read_products and read_locations. Topics/payloads were checked against [official 2026-07 webhooks](https://shopify.dev/docs/api/webhooks/2026-07) and the [topic enum](https://shopify.dev/docs/api/admin-graphql/2026-07/enums/WebhookSubscriptionTopic); the new location(id) query passed Shopify Toolkit schema validation. Use the existing named app configuration; no production deployment is needed.
+
+The HTTP route uses authenticate.webhook, validates exact identifiers, and commits a pending WebhookEvent before returning 200. It does not call GraphQL, run a scan or send Telegram. A database enqueue failure returns 503. Deduplication uses shop + X-Shopify-Webhook-Id; X-Shopify-Event-Id is correlation only. Authenticated location delete also records a tombstone immediately to fence old scans; cleanup runs in the worker.
+
+The existing inventory worker drains persisted jobs and reconciles shops in two awaited loops. A job claim uses PostgreSQL SKIP LOCKED, a five-minute lease and a random fencing token. It rereads current GraphQL inventory, including all variant pages, then commits inventory, alert transitions and processedAt together. Missing quantity/activity data fails; zero/negative quantity and opaque InventoryLevel GIDs are retained. A delayed disconnect reads current state and cannot invalidate a connected level merely because its payload is old. Before baseline, the job performs baseline and rereads the item rather than silently dropping the event. First-seen/reconnected low items get BASELINE alerts without individual notification schedules.
+
+Temporary failures remain unprocessed with retry metadata: default backoff 5 seconds, exponential up to 5 minutes, at most 8 claims. Expired leases can be reclaimed after restart; stale tokens cannot finalize or commit inventory. Exhaustion leaves processedAt NULL, nextAttemptAt NULL and result retry_exhausted for inspection, never false success. After repairing auth/API/database, reconciliation restores current inventory; it does not mark exhausted jobs successful or recreate intermediate transitions. Reopen the embedded app to refresh an invalid offline session. To retry a specific exhausted delivery after fixing the cause, use Prisma Studio on that shop/delivery only: attempts=0, nextAttemptAt=current UTC, leaseUntil/leaseToken=NULL, processedAt remains NULL. Do not change delivery identity or bulk-reset rows.
+
+Lifecycle worker reads current location metadata through the store's offline GraphQL context. Rename preserves baseline/quantity/alerts. Deactivate invalidates only that location's snapshots and resolves active alerts with LOCATION_DEACTIVATED. Reactivation increments generation and runs a fresh baseline. Delete keeps a permanent tombstone and LOCATION_DELETED history even when GraphQL can no longer return the location. Old jobs/scans cannot resurrect it. Shop/location locks and captured version/generation fence concurrent sync, discovery, threshold and lifecycle changes. Full-sync lastSyncedAt is not advanced by item webhooks.
+
+Migration `20261102020000_durable_location_webhooks` adds job fields to WebhookEvent, generation/deletedAt to MonitoredLocation, and nullable resolutionReason to InventoryAlert. Existing processed deliveries stay complete; Sessions, snapshots, alert history, ACTIVE partial unique index and Telegram retry/lease fields are preserved. No new table. The isolated migration test compares existing delivery metadata and indexes before/after migration.
+
+Run in separate terminals from stock-notifier-app/ with Node 22 LTS:
+
+```powershell
+npm run setup
+npm run build
+npm run dev -- --config stock-notifier-app
+# Separate terminal: uses matching Shopify credentials/current tunnel in private .env
+npm run inventory:worker
+# Separate terminal: start only when real Telegram delivery is intended
+npm run notifications:worker
+```
+
+Rebuild/restart workers after code changes. Configuration defaults in .env.example: INVENTORY_RECONCILE_INTERVAL_MS=60000, INVENTORY_RETRY_BACKOFF_MS=60000, WEBHOOK_RETRY_BASE_MS=5000; values must be integer milliseconds 100–3600000. Webhook idle poll is 1 second. Reconciliation reads every location page before deactivating missing locations, scans each active location independently, and retries failed locations on a later pass. Duplicate workers can cause redundant API reads; location versions reject stale writes. Polling repairs current state only and cannot recover every transition while offline. Telegram still sends only INVENTORY_TRANSITION; BASELINE/THRESHOLD_CHANGE stay pending for M4 digest without fake SENT/FAILED.
+
+Manual Development Store verification (merchant performs these changes; automated tests use mocks):
+
+| Test | Steps and expected result |
+| --- | --- |
+| A | Baseline active locations A/B, threshold 5, tracked item available 6. Keep app tunnel and both workers running. Change A: 6 → 5 → 3 → 8 → 4 without Sync now; wait for each WebhookEvent.processedAt and database quantity before the next change. InventoryAlert: active at 5, same at 3, resolved STOCK_RECOVERED at 8, new active at 4. Telegram receives two transition messages when configured before triggering. |
+| B | Change the same item at B. B creates its own transition/history; A stays unchanged. Inspect full composite identity in InventoryLevel, not SKU alone. |
+| C | Create active C in Shopify. Expect MonitoredLocation, completed baseline and independent timestamps; low baseline alerts have origin BASELINE and no individual delivery schedule. Rename C: baseline/quantities/history remain unchanged. |
+| D | Deactivate B. Expect isActive=false, B snapshots not current, B alerts resolved LOCATION_DEACTIVATED; A/C continue. Old scans cannot commit after the local inactive transition. |
+| E | Activate B again. Expect higher generation, fresh baseline timestamps and held BASELINE alerts; historical resolved alerts remain resolved. If testing delete, delete only a disposable location: expect deletedAt and no resurrection after discovery. |
+| F | Stop inventory worker, change stock, confirm HTTP deliveries remain pending. Restart worker; pending jobs drain/reconcile without duplicate ACTIVE alerts. For missed webhooks, stop the local tunnel as well, then reopen app/update worker URL and restart. Reconciliation restores current state; intermediate transitions are not guaranteed. |
+
+For connect/disconnect, stop stocking a disposable test item at B, wait for the job to complete, then reconnect: only B becomes noncurrent/current; alert history is retained and reconnect low stock is baseline. Inspect WebhookEvent.attempts/nextAttemptAt/leaseUntil/result/lastError for retry progress. Mocked backend tests cover duplicate concurrency, out-of-order reads, stale scans, rollback, tenant isolation, restart and notification exclusions. Automated, PostgreSQL integration and live Shopify/Telegram results must be reported separately; successful mocks do not prove remote subscriptions or tunnel delivery.
+
+M4 remains Dashboard/table/filter and durable baseline/threshold digests. No M3 UI automation, billing or production deployment.
+
+M3 changed-file inventory (paths relative to this app unless prefixed ../):
+
+| Area | Files |
+| --- | --- |
+| New repositories/services | app/modules/inventory/location.repository.server.ts; webhook-job.repository.server.ts; webhook-job.service.server.ts (same directory) |
+| Existing inventory modules | app/modules/inventory/inventory-background.server.ts; inventory-sync.service.server.ts; inventory-webhook.repository.server.ts; inventory-webhook.service.server.ts; inventory.repository.server.ts; location-discovery.server.ts (same directory) |
+| Shared business/API | app/modules/alerts/alert.service.server.ts; app/modules/settings/settings.repository.server.ts; app/modules/shopify/graphql/queries.ts; app/modules/shopify/graphql/shopify-graphql.server.ts |
+| Entry points | app/routes/webhooks.inventory.tsx; app/workers/telegram.worker.server.ts |
+| Database | prisma/schema.prisma; prisma/migrations/20261102020000_durable_location_webhooks/migration.sql (new) |
+| Configuration | .env.example; shopify.app.toml; shopify.app.stock-notifier-app.toml |
+| Tests | tests/inventory-webhook.integration.test.ts; inventory-webhook.test.ts; monitored-location.integration.test.ts; multi-location.integration.test.ts (same directory) |
+| Documentation | README.md; ../AGENTS.md; ../docs/PRD.md; ARCHITECTURE.md; DATABASE.md; ACCEPTANCE_CRITERIA.md; IMPLEMENTATION_PLAN.md (same docs directory) |
+
+### Phase M2: automatic discovery and multi-location sync (historical)
 
 All active Shopify locations are monitored after the first successful complete discovery. Settings no longer requires choosing a monitored location; Sync now discovers and scans every active location, reports individual failures, and keeps successful locations committed. No Dashboard or digest is added. The older Step 1-8 sections below describe pre-discovery compatibility behavior and are superseded by this section after cutover.
 

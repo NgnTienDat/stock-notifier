@@ -9,6 +9,9 @@ const environmentKeys = [
   "SHOPIFY_APP_URL",
   "SCOPES",
   "SHOP_CUSTOM_DOMAIN",
+  "INVENTORY_RECONCILE_INTERVAL_MS",
+  "INVENTORY_RETRY_BACKOFF_MS",
+  "WEBHOOK_RETRY_BASE_MS",
 ];
 // Capture before loadEnv: dotenv expansion can replace explicit empty overrides.
 const overrides = Object.fromEntries(
@@ -60,22 +63,25 @@ if (missingShopify.length || !validAppUrl) {
     ? await import("../modules/inventory/inventory-background.server")
     : null;
   let stopping = false;
+  const controller = new AbortController();
   process.once("SIGINT", () => {
     stopping = true;
+    controller.abort();
   });
   process.once("SIGTERM", () => {
     stopping = true;
+    controller.abort();
   });
   console.info(
     inventoryMode
-      ? "Inventory worker started; discovery/sync every 60 seconds."
+      ? "Inventory worker started; processing durable webhooks and periodic reconciliation."
       : "Telegram worker started; polling PostgreSQL.",
   );
   try {
-    while (!stopping) {
-      try {
-        if (inventory) await inventory.syncInstalledShops(() => stopping);
-        else {
+    if (inventory) await inventory.runInventoryWorker(controller.signal);
+    else
+      while (!stopping) {
+        try {
           const shops = await db.shopSettings.findMany({
             where: { telegramChatId: { not: null } },
             select: { shopDomain: true },
@@ -84,12 +90,11 @@ if (missingShopify.length || !validAppUrl) {
             if (stopping) break;
             await processNotificationForShop(shop.shopDomain);
           }
+        } catch {
+          console.error("Local worker failure; retrying on the next poll.");
         }
-      } catch {
-        console.error("Local worker failure; retrying on the next poll.");
+        if (!stopping) await setTimeout(1000);
       }
-      if (!stopping) await setTimeout(inventoryMode ? 60000 : 1000);
-    }
   } finally {
     await db.$disconnect();
   }

@@ -36,7 +36,8 @@ export async function getInventorySyncSettings(
   });
   if (!settings) return null;
   const monitored =
-    settings.locationsDiscoveredAt && (locationGid ?? settings.locationGid)
+    (locationGid || settings.locationsDiscoveredAt) &&
+    (locationGid ?? settings.locationGid)
       ? await db.monitoredLocation.findUnique({
           where: {
             shopDomain_locationGid: {
@@ -48,7 +49,7 @@ export async function getInventorySyncSettings(
       : null;
   return {
     ...settings,
-    ...(settings.locationsDiscoveredAt
+    ...(locationGid || settings.locationsDiscoveredAt
       ? {
           locationGid: monitored?.isActive ? monitored.locationGid : null,
           locationName: monitored?.locationName ?? null,
@@ -202,7 +203,13 @@ export function commitInventorySync(
         where: { ...missing, isCurrent: true },
         data: { isCurrent: false },
       });
-      alertsResolved += await resolveActiveAlerts(tx, scope, missing, syncedAt);
+      alertsResolved += await resolveActiveAlerts(
+        tx,
+        scope,
+        missing,
+        syncedAt,
+        "INVENTORY_UNAVAILABLE",
+      );
       if (settings.monitored) {
         await tx.monitoredLocation.update({
           where: { shopDomain_locationGid: scope },

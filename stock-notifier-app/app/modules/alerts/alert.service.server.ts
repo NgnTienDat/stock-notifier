@@ -1,5 +1,6 @@
 import type {
   AlertOrigin,
+  AlertResolutionReason,
   InventoryLevel,
   Prisma,
   ShopSettings,
@@ -36,10 +37,11 @@ export async function resolveActiveAlerts(
   scope: Scope,
   filter: Prisma.InventoryLevelWhereInput,
   now: Date,
+  reason: AlertResolutionReason = "STOCK_RECOVERED",
 ) {
   const { count } = await tx.inventoryAlert.updateMany({
     where: { status: "ACTIVE", inventoryLevel: { AND: [scope, filter] } },
-    data: { status: "RESOLVED", resolvedAt: now },
+    data: { status: "RESOLVED", resolvedAt: now, resolutionReason: reason },
   });
   return count;
 }
@@ -75,6 +77,7 @@ export async function applyInventoryAlertTransition(
         { shopDomain: current.shopDomain, locationGid: current.locationGid },
         { id: current.id },
         now,
+        current.isCurrent ? "STOCK_RECOVERED" : "INVENTORY_UNAVAILABLE",
       ),
     };
   }

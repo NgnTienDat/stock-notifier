@@ -16,9 +16,9 @@ Tài liệu liên quan: [Architecture](ARCHITECTURE.md) · [Database](DATABASE.m
 | P0 | Embedded UI | Dashboard inventory + Settings (location, threshold, Telegram, sync) |
 | P1 | Alert history | Danh sách alert, trạng thái `ACTIVE/RESOLVED`, `PENDING/SENT/FAILED` |
 
-Nâng cấp M2: discovery/sync tự động bằng worker local và Sync now. Webhook hiện có giữ routing location legacy đến M3; Dashboard và Telegram digest chờ M4. Trước discovery thành công đầu tiên, giữ compatibility dữ liệu cũ; sau đó MonitoredLocation là nguồn monitoring.
+M3: inventory webhooks xử lý mọi active MonitoredLocation, không lọc theo lựa chọn legacy. HTTP xác thực và lưu job bền vững trong PostgreSQL; inventory worker đọc lại GraphQL, cập nhật inventory/alerts, retry và reconciliation. Location create/activate/update/deactivate/delete được xử lý riêng; Dashboard và Telegram digest chờ M4.
 
-Không làm: threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue/Redis, microservices, hosting production. Dùng auth/session chính thức của Shopify.
+Không làm: threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue service/Redis, microservices, hosting production. Chỉ mở rộng WebhookEvent làm hàng đợi PostgreSQL. Dùng auth/session chính thức của Shopify.
 
 ## 2. Luồng sử dụng
 
@@ -43,6 +43,7 @@ Không làm: threshold từng variant, tự điều chỉnh stock, purchase orde
 - Sau discovery, đổi lựa chọn legacy chỉ thay preference hiển thị/compatibility, không resolve alert, vô hiệu snapshot hoặc reset baseline bất kỳ monitored location nào. Discovery đầy đủ xác minh location không còn active mới vô hiệu snapshots/resolve alerts liên quan; lỗi discovery giữ nguyên dữ liệu.
 - Đánh giá threshold chỉ dùng items current thuộc monitored active locations. Dashboard đa location chưa triển khai trong M2.
 - Không có dữ liệu tracking/quantity tại location thì không coi là quantity `0`.
+- Deactivate chỉ vô hiệu snapshots/resolve alerts tại location đó, giữ history và resolution reason. Reactivate bắt đầu baseline mới; rename giữ baseline. Delete để lại tombstone, không được resurrect bởi job/scan cũ. Reconciliation phục hồi trạng thái hiện tại, không tái tạo được mọi transition trung gian khi offline.
 
 ## 4. Telegram message
 

@@ -5,6 +5,7 @@ import {
   INVENTORY_LEVEL_QUERY,
   LOCATION_INVENTORY_QUERY,
   LOCATIONS_QUERY,
+  LOCATION_QUERY,
 } from "./queries";
 import type {
   GraphqlEnvelope,
@@ -178,6 +179,8 @@ export function createShopifyGraphqlService(
     const variants: InventoryItemData["variants"] = [];
     const seen = new Set<string>();
     let page = item.variants;
+    if (page === undefined)
+      throw new ShopifyGraphqlError("Shopify omitted inventory variants");
     while (page) {
       variants.push(
         ...page.nodes.map((variant) => ({
@@ -364,6 +367,14 @@ export function createShopifyGraphqlService(
         "Shopify returned a different inventory item",
       );
     const level = item?.inventoryLevel;
+    if (
+      (data.location && typeof data.location.isActive !== "boolean") ||
+      (item && typeof item.tracked !== "boolean") ||
+      (level && typeof level.isActive !== "boolean")
+    )
+      throw new ShopifyGraphqlError(
+        "Shopify omitted inventory activity fields",
+      );
     if (!data.location?.isActive || !item?.tracked || !level?.isActive)
       return null;
     const quantity = level.quantities.find(
@@ -393,8 +404,30 @@ export function createShopifyGraphqlService(
     };
   }
 
+  async function getLocation(locationGid: string) {
+    const data = await query<{
+      location: { id: string; name: string; isActive: boolean } | null;
+    }>(LOCATION_QUERY, { locationId: locationGid });
+    if (data.location === null) return null;
+    if (
+      !data.location ||
+      data.location.id !== locationGid ||
+      typeof data.location.name !== "string" ||
+      typeof data.location.isActive !== "boolean"
+    )
+      throw new ShopifyGraphqlError(
+        "Shopify returned incomplete location metadata",
+      );
+    return {
+      locationGid,
+      locationName: data.location.name,
+      isActive: data.location.isActive,
+    };
+  }
+
   return {
     getLocations,
+    getLocation,
     getInventoryLevels,
     getInventoryItem,
     getInventoryLevel,

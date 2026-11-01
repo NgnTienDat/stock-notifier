@@ -71,9 +71,17 @@ async function legacyState() {
     levels: await db.inventoryLevel.findMany({ orderBy: { id: "asc" } }),
     alerts: await db.inventoryAlert.findMany({
       orderBy: { id: "asc" },
-      omit: { origin: true },
+      omit: { origin: true, resolutionReason: true },
     }),
-    events: await db.webhookEvent.findMany({ orderBy: { id: "asc" } }),
+    events: await db.webhookEvent.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        id: true,
+        shopDomain: true,
+        webhookId: true,
+        processedAt: true,
+      },
+    }),
   };
 }
 
@@ -81,7 +89,7 @@ function indexes() {
   return db.$queryRaw`
     SELECT indexname, indexdef FROM pg_indexes
     WHERE schemaname = ${isolated.schema} AND tablename <> 'MonitoredLocation'
-    ORDER BY indexname
+    AND indexname <> 'WebhookEvent_nextAttemptAt_idx' ORDER BY indexname
   `;
 }
 
@@ -92,7 +100,8 @@ beforeAll(async () => {
     recursive: true,
     filter: (source) =>
       !source.includes(migration) &&
-      !source.includes("20261102010000_multi_location_runtime"),
+      !source.includes("20261102010000_multi_location_runtime") &&
+      !source.includes("20261102020000_durable_location_webhooks"),
   });
   await db.$executeRawUnsafe(`CREATE SCHEMA "${isolated.schema}"`);
   deploy();
@@ -137,9 +146,7 @@ beforeAll(async () => {
   await db.$executeRaw`INSERT INTO "InventoryAlert" (
     id,"inventoryLevelId","quantityAtTrigger","thresholdAtTrigger",status,"resolvedAt","notificationStatus","notifiedAt"
   ) VALUES ('m1-resolved',${level.id},4,5,'RESOLVED',${lastSyncedAt},'SENT',${lastSyncedAt})`;
-  await db.webhookEvent.create({
-    data: { shopDomain: shops[0], webhookId: "fixture-delivery" },
-  });
+  await db.$executeRaw`INSERT INTO "WebhookEvent"(id,"shopDomain","webhookId","processedAt") VALUES ('m1-event',${shops[0]},'fixture-delivery',${lastSyncedAt})`;
   before = await legacyState();
   originalIndexes = await indexes();
   cpSync(
@@ -151,6 +158,12 @@ beforeAll(async () => {
   cpSync(
     join("prisma/migrations", "20261102010000_multi_location_runtime"),
     join(workspace, "migrations", "20261102010000_multi_location_runtime"),
+    { recursive: true },
+  );
+  deploy();
+  cpSync(
+    join("prisma/migrations", "20261102020000_durable_location_webhooks"),
+    join(workspace, "migrations", "20261102020000_durable_location_webhooks"),
     { recursive: true },
   );
   deploy();

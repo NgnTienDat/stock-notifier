@@ -41,9 +41,21 @@ export function saveLocationSettings(
     `;
 
     const changed = current.locationGid !== location.locationGid;
-    if (!current.locationsDiscoveredAt && changed && current.locationGid) {
+    const monitoredMode =
+      !!current.locationsDiscoveredAt ||
+      !!(await tx.monitoredLocation.findFirst({
+        where: { shopDomain, isActive: true },
+        select: { locationGid: true },
+      }));
+    if (!monitoredMode && changed && current.locationGid) {
       const scope = { shopDomain, locationGid: current.locationGid };
-      await resolveActiveAlerts(tx, scope, {}, new Date());
+      await resolveActiveAlerts(
+        tx,
+        scope,
+        {},
+        new Date(),
+        "MONITORING_STOPPED",
+      );
       await tx.inventoryLevel.updateMany({
         where: scope,
         data: { isCurrent: false },
@@ -55,9 +67,7 @@ export function saveLocationSettings(
       data: {
         locationGid: location.locationGid,
         locationName: location.locationName,
-        ...(!current.locationsDiscoveredAt && changed
-          ? { lastSyncedAt: null }
-          : {}),
+        ...(!monitoredMode && changed ? { lastSyncedAt: null } : {}),
         // Invalidate scans even for A -> B -> A within the same millisecond.
         updatedAt: new Date(
           Math.max(Date.now(), current.updatedAt.getTime() + 1),
@@ -94,7 +104,13 @@ export function saveLowStockThreshold(
     if (current.lowStockThreshold === lowStockThreshold)
       return { lowStockThreshold };
     const now = new Date();
-    if (current.locationsDiscoveredAt) {
+    if (
+      current.locationsDiscoveredAt ||
+      (await tx.monitoredLocation.findFirst({
+        where: { shopDomain, isActive: true },
+        select: { locationGid: true },
+      }))
+    ) {
       const locations = await tx.$queryRaw<
         { locationGid: string; baselineCompletedAt: Date | null }[]
       >`

@@ -103,7 +103,9 @@ beforeAll(async () => {
   cpSync("prisma/schema.prisma", join(workspace, "schema.prisma"));
   cpSync("prisma/migrations", join(workspace, "migrations"), {
     recursive: true,
-    filter: (source) => !source.includes(migration),
+    filter: (source) =>
+      !source.includes(migration) &&
+      !source.includes("20261102020000_durable_location_webhooks"),
   });
   await db.$executeRawUnsafe(`CREATE SCHEMA "${fixture.schema}"`);
   deploy();
@@ -113,6 +115,12 @@ beforeAll(async () => {
   cpSync(
     join("prisma/migrations", migration),
     join(workspace, "migrations", migration),
+    { recursive: true },
+  );
+  deploy();
+  cpSync(
+    join("prisma/migrations", "20261102020000_durable_location_webhooks"),
+    join(workspace, "migrations", "20261102020000_durable_location_webhooks"),
     { recursive: true },
   );
   deploy();

@@ -88,7 +88,8 @@ export async function syncAllActiveLocations(
       onlyDue &&
       settings?.monitored?.baselineAlertsCompletedAt &&
       settings.monitored.lastSyncedAt &&
-      Date.now() - settings.monitored.lastSyncedAt.getTime() < 60000
+      Date.now() - settings.monitored.lastSyncedAt.getTime() <
+        Number(process.env.INVENTORY_RECONCILE_INTERVAL_MS ?? 60000)
     )
       continue;
     try {
