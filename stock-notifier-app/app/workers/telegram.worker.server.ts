@@ -59,6 +59,8 @@ if (missingShopify.length || !validAppUrl) {
   const { default: db } = await import("../db.server");
   const { processNotificationForShop } =
     await import("../modules/notifications/notification-worker.server");
+  const { processDigestForShop } =
+    await import("../modules/notifications/digest.server");
   const inventory = inventoryMode
     ? await import("../modules/inventory/inventory-background.server")
     : null;
@@ -89,6 +91,7 @@ if (missingShopify.length || !validAppUrl) {
           for (const shop of shops) {
             if (stopping) break;
             await processNotificationForShop(shop.shopDomain);
+            await processDigestForShop(shop.shopDomain);
           }
         } catch {
           console.error("Local worker failure; retrying on the next poll.");

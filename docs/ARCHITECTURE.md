@@ -4,6 +4,8 @@ Phạm vi: [PRD.md](PRD.md). Schema: [DATABASE.md](DATABASE.md). Đây là **mod
 
 ## 1. Stack & conventions
 
+**M4:** HTML reference mới nhất trong app root là source UI; dùng Polaris 2/AppProvider/App Bridge có sẵn. Dashboard `/app`, history `/app/alerts` đọc PostgreSQL qua authenticated loaders; Settings `/app/settings` giữ services hiện tại. Module `dashboard/` tách read repository, URL filters, components/CSS. Không inventory GraphQL scan trong Dashboard loader. Filter GET chỉ đọc, không gọi selection/sync/Alert Engine. Settings Refresh locations là action discovery tường minh, Sync all locations dùng action sync hiện có.
+
 - **Shopify official React Router app template**, TypeScript strict, React, App Bridge và UI components theo template thực tế; Node.js phiên bản tương thích template.
 - **Shopify Admin GraphQL API `2026-07`**, webhook HTTPS, auth/session do Shopify package cung cấp. Runtime (`app/shopify.server.ts`), codegen (`.graphqlrc.ts`) dùng `ApiVersion.July26`; `[webhooks].api_version` trong `shopify.app.toml` là `2026-07`.
 - **Prisma + PostgreSQL** cho session, settings, inventory, alerts và webhook deduplication.
@@ -156,6 +158,16 @@ flowchart TD
 6. **M2 baseline/catch-up:** Alert Engine nhận origin BASELINE để tạo ACTIVE cho low items, dùng partial unique index/skipDuplicates giữ nguyên ACTIVE cũ. baselineAlertsCompletedAt chỉ ghi cùng successful full-sync transaction, độc lập baselineCompletedAt M1. BASELINE/THRESHOLD_CHANGE không có lịch gửi riêng; worker chỉ claim INVENTORY_TRANSITION và không giả SENT/FAILED cho alerts chờ M4. Các jobs transition trước migration giữ origin INVENTORY_TRANSITION, nguyên retry/lease metadata. Trước discovery thành công đầu tiên, đường compatibility legacy vẫn giữ policy cũ để tránh đổi dữ liệu trước khi xác minh locations.
 
 Webhook handler chỉ sử dụng source shop và event data đã xác thực. Secrets (`SHOPIFY_API_SECRET`, token Telegram, DB URL) trong `.env` local, không commit Git. Việc kiểm chứng behavior nằm trong [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md).
+
+### M4 digest protocol
+
+Alert Engine giữ transitions M3. Sau khi insert alert mới thành công, cùng transaction gắn digestId chỉ cho BASELINE/THRESHOLD_CHANGE đủ Bot Token/Chat ID. Không scan historical PENDING. Baseline dùng advisory lock theo shop (sau shop/location locks) để gom commits các locations trong cửa sổ cố định 30 giây; membership đóng khi worker claim. Threshold operation có UUID tạo một lần trước transaction, batchKey duy nhất theo shop; retry worker không tạo batch khác. Nếu operation rollback, alert/batch/membership cùng rollback.
+
+NotificationDigest lưu origin/destination, old/new threshold, expected location coverage, timestamps và delivery metadata. Worker Telegram hiện tại xử lý immediate transition rồi digest; claim lấy shop write lock trước batch SKIP LOCKED, lease 30 giây/token, đồng hồ PostgreSQL. Tối đa 3 claims; retry 5/30 giây hoặc Telegram retry_after lớn hơn. Không giữ transaction khi gọi Telegram. Finalize fenced transaction cập nhật batch và eligible alert members atomic chỉ sau ok:true. API lỗi không rollback inventory; DB finalize lỗi giữ lease để restart phục hồi. Lease hết lượt FAILED; stale worker không được finalize.
+
+Trước mỗi attempt, đọc lại active/current/low/baseline/session/destination. Resolved members không xuất hiện như đang low; empty/ineligible batch CANCELLED, alerts không được giả SENT/FAILED. Message deterministic theo location/item/id, plain text không parse_mode; tổng số bao gồm tất cả eligible members, chỉ truncate chi tiết và nêu số còn lại. Không chia nhiều phần. Có khoảng race giữa eligibility read và HTTP send; resolve/config edit không thu hồi được send đang diễn ra. Crash sau khi Telegram nhận nhưng trước DB commit có thể gửi lại.
+
+Dashboard dùng read-only RepeatableRead transaction để counts/page nhất quán; locations lỗi vẫn hiển thị last successful snapshots nếu baseline đã hoàn tất, cùng lỗi sync/mốc attempt riêng. LastSyncError không thay baseline/quantity/version; failed stale attempt không được ghi đè metadata của commit mới hơn. Không giả worker Running vì chưa có heartbeat; UI ghi rõ chưa có liveness telemetry.
 
 ### M3 location lifecycle
 

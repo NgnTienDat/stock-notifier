@@ -30,7 +30,7 @@ If documents disagree, identify the conflict and ask before changing product beh
 - Scope every database read/write to the authenticated Shopify shop and the monitored inventory location; legacy selection is only a compatibility/display preference after discovery.
 - Deduplicate and authenticate webhooks; guard against stale events and concurrent updates. Persist inventory and alert transitions atomically before sending Telegram.
 - Secrets belong in environment variables. Never commit credentials, tokens, `.env`, or local session data.
-- Do not introduce Redis, external queues, microservices, AI, advanced analytics, or production infrastructure. M3 reuses WebhookEvent as a PostgreSQL-backed durable job queue and the inventory worker for all-location webhooks, lifecycle and reconciliation. Dashboard/digests remain M4.
+- Do not introduce Redis, external queues, microservices, AI, advanced analytics, or production infrastructure. M3 reuses WebhookEvent and the inventory worker. M4 adds the approved HTML-based Dashboard/history and PostgreSQL NotificationDigest batches in the existing Telegram worker; historical/pre-configuration alerts must never be auto-enrolled. Dashboard location is a read-only view filter.
 - Do not implement P1 features until P0 is working unless explicitly instructed.
 
 ## Workflow and verification

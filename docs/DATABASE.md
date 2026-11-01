@@ -1,6 +1,6 @@
 # StockNotifier — Database Design (Prisma + PostgreSQL)
 
-Một database phục vụ Shopify sessions và năm bảng nghiệp vụ sau M1 (thêm `MonitoredLocation`). Tên cột/model chi tiết có thể theo naming conventions của template; các **ràng buộc và quan hệ** dưới đây là yêu cầu.
+Một database phục vụ Shopify sessions và sáu bảng nghiệp vụ sau M4 (thêm `NotificationDigest` bên cạnh năm bảng M1–M3). Tên cột/model theo template; các **ràng buộc và quan hệ** dưới đây là yêu cầu.
 
 ## 1. ERD
 
@@ -60,6 +60,13 @@ erDiagram
 
 ## 2. Bảng và constraints
 
+M4 migration `20261102030000_dashboard_digests` additive, không backfill deliveries:
+
+- MonitoredLocation thêm `lastSyncAttemptAt?`, `lastSyncError?`; success clear error, lỗi chỉ lưu metadata nếu captured version còn hiện hành. Không thay baseline/status engine.
+- NotificationDigest: id; shop FK; batchKey unique theo shop; origin BASELINE/THRESHOLD_CHANGE (SQL CHECK); chatId; oldThreshold?, newThreshold; locations JSON (expected coverage); createdAt/availableAt/closedAt; DigestStatus PENDING/SENT/FAILED/CANCELLED; attempts, nextAttemptAt (index), leaseUntil/token, notifiedAt, text/error.
+- InventoryAlert thêm nullable digestId FK/index. Null nghĩa là không enroll vào digest, bao gồm toàn bộ historical alerts. Giữ nguyên notification retry/lease fields của immediate transition và partial unique ACTIVE index. Batch/membership chỉ tạo cùng transaction alert mới khi Telegram đã cấu hình.
+- Batch delivery thành công mới ghi SENT/notifiedAt cho batch và eligible members; cancelled/failed digest không sửa giả trạng thái alerts cũ. Không xóa Session, snapshots, history hoặc metadata cũ.
+
 | Model | Những field và constraint bắt buộc |
 | --- | --- |
 | `ShopSettings` | `shopDomain` PK; legacy preference `locationGid?`, `locationName?`, `lastSyncedAt?` (không quyết định monitoring M3); `telegramChatId?`, `locationsDiscoveredAt?`; `lowStockThreshold Int @default(5)` với kiểm tra `>= 0`; timestamps tạo/sửa |
@@ -96,4 +103,4 @@ Backfill M1 chỉ INSERT khi `ShopSettings.locationGid IS NOT NULL`, giữ nguy�
 9. Khi đã có active MonitoredLocation, đổi preference legacy không resolve/invalidate/reset monitored data. Discovery chỉ đánh dấu inactive sau khi đọc đủ danh sách active. Deactivate giữ history; reactivate reset baseline và tăng generation; rename không reset. Tombstone chặn mọi scan/job resurrect location đã delete.
 10. Threshold dùng rows current thuộc tất cả active monitored locations; Dashboard đa location chờ M4. Sync locks shop FOR SHARE và location FOR UPDATE, kiểm tra shop.updatedAt/location.version rồi tăng version location; không tăng version location khác.
 
-Không thêm bảng notification deliveries, retry jobs hoặc history inventory. Bước 8 thêm các cột delivery ngay trên InventoryAlert: lịch NULL nghĩa là không lên lịch (bao gồm mọi alert cũ), tối đa 3 lần thử, lease 30 giây và token fencing. Alert/job được ghi atomic; destination/text chụp tại trigger, tránh gửi metadata/Chat ID của cấu hình khác. Không thay đổi Session hoặc partial unique ACTIVE index. Xem transaction và retry giới hạn tại [ARCHITECTURE.md](ARCHITECTURE.md).
+Bước 8 giữ immediate delivery fields ngay trên InventoryAlert; M4 thêm NotificationDigest cho logical batches. Immediate nextAttemptAt NULL vẫn là không lên lịch; digest membership được theo dõi riêng. Tối đa 3 lần thử, lease 30 giây/token fencing; giữ Session/ACTIVE index. Xem protocol và giới hạn tại [ARCHITECTURE.md](ARCHITECTURE.md).

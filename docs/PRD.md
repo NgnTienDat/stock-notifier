@@ -16,7 +16,7 @@ Tài liệu liên quan: [Architecture](ARCHITECTURE.md) · [Database](DATABASE.m
 | P0 | Embedded UI | Dashboard inventory + Settings (location, threshold, Telegram, sync) |
 | P1 | Alert history | Danh sách alert, trạng thái `ACTIVE/RESOLVED`, `PENDING/SENT/FAILED` |
 
-M3: inventory webhooks xử lý mọi active MonitoredLocation, không lọc theo lựa chọn legacy. HTTP xác thực và lưu job bền vững trong PostgreSQL; inventory worker đọc lại GraphQL, cập nhật inventory/alerts, retry và reconciliation. Location create/activate/update/deactivate/delete được xử lý riêng; Dashboard và Telegram digest chờ M4.
+M3: inventory webhooks xử lý mọi active MonitoredLocation; worker đọc lại GraphQL, xử lý lifecycle/retry/reconciliation. M4 bổ sung Dashboard, Alert history, Settings theo `stock-notifier-app/stocknotifier-dashboard-preview.html` đã duyệt và Telegram digest. Sidebar/topbar Shopify do host cung cấp; không sao chép shell giả lập.
 
 Không làm: threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue service/Redis, microservices, hosting production. Chỉ mở rộng WebhookEvent làm hàng đợi PostgreSQL. Dùng auth/session chính thức của Shopify.
 
@@ -39,9 +39,11 @@ Không làm: threshold từng variant, tự điều chỉnh stock, purchase orde
 - Sau khi restock về `NORMAL`, lần giảm tiếp theo tạo một alert mới.
 - **Full Sync:** scan đủ mọi trang trước khi ghi snapshot. Chỉ sau khi scan thành công toàn bộ mới commit snapshot, đánh dấu `isCurrent = false` cho dữ liệu không còn hợp lệ, resolve active alerts tương ứng và cập nhật `lastSyncedAt`; không xóa lịch sử. Scan lỗi không ghi một phần hoặc thay đổi mốc sync thành công trước đó.
 - **Baseline M2:** low-stock tạo ACTIVE alert origin BASELINE, không lên lịch gửi riêng lẻ. Lần sync đầu sau nâng cấp catch-up idempotent cho location M1: bổ sung alert low còn thiếu, giữ nguyên ACTIVE/history. Item mới hoặc trở lại current cũng nhận baseline. Các lần sync sau dùng INVENTORY_TRANSITION như webhook.
-- Threshold chung toàn shop: tính lại items current tại các monitored locations active; khi tăng làm item mới low thì tạo THRESHOLD_CHANGE, khi giảm resolve alerts không còn hợp lệ. Không gửi riêng các alerts này; chờ digest M4.
+- Threshold chung toàn shop: tính lại current items tại monitored active locations; tăng làm item mới low tạo THRESHOLD_CHANGE, giảm resolve alerts không còn hợp lệ. M4 gom alerts mới của cùng operation vào một digest, không gửi từng alert, không gửi nếu không tạo alert mới.
 - Sau discovery, đổi lựa chọn legacy chỉ thay preference hiển thị/compatibility, không resolve alert, vô hiệu snapshot hoặc reset baseline bất kỳ monitored location nào. Discovery đầy đủ xác minh location không còn active mới vô hiệu snapshots/resolve alerts liên quan; lỗi discovery giữ nguyên dữ liệu.
-- Đánh giá threshold chỉ dùng items current thuộc monitored active locations. Dashboard đa location chưa triển khai trong M2.
+- Dashboard mặc định All locations, location selector chỉ là view filter qua URL; không đổi Settings/monitoring/baseline/alerts hoặc tự sync. KPI/table dùng snapshots current thuộc locations active, baseline hoàn tất; search/pagination phía server và scope theo shop đã xác thực. Lịch sử giữ cả inactive locations. Products đếm productGid duy nhất; items/low stock đếm snapshot item + location, không nhân theo variants.
+- Digest baseline chỉ gắn alerts mới khi Bot Token và Chat ID đã có; gom theo shop/destination trong cửa sổ 30 giây, không chờ location lỗi vô hạn. Location baseline muộn hoặc item/new location mới nhận batch bổ sung. Sync lặp không tạo lại alert/batch. Migration không enroll historical PENDING; cấu hình Telegram sau không gửi ngược lịch sử.
+- Digest đọc lại current eligibility trước mỗi lần gửi, bỏ alerts đã resolve/inactive; batch không còn eligible bị CANCELLED, không giả SENT/FAILED trên alert. Gửi plain text một message tối đa 4096 ký tự, chi tiết giới hạn nhưng tổng số chính xác. Chỉ sau API ok:true mới ghi SENT/notifiedAt cho batch và eligible members. Retry/lease/token bền vững trong PostgreSQL; không cam kết exactly-once khi crash sau API success.
 - Không có dữ liệu tracking/quantity tại location thì không coi là quantity `0`.
 - Deactivate chỉ vô hiệu snapshots/resolve alerts tại location đó, giữ history và resolution reason. Reactivate bắt đầu baseline mới; rename giữ baseline. Delete để lại tombstone, không được resurrect bởi job/scan cũ. Reconciliation phục hồi trạng thái hiện tại, không tái tạo được mọi transition trung gian khi offline.
 

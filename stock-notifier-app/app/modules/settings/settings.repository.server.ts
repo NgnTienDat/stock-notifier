@@ -1,4 +1,5 @@
 import type { ShopSettings } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import db from "../../db.server";
 import type { LocationData } from "../shopify/graphql/types";
 import {
@@ -82,6 +83,7 @@ export function saveLowStockThreshold(
   shopDomain: string,
   lowStockThreshold: number,
 ) {
+  const digestKey = `threshold:${randomUUID()}`;
   return db.$transaction(async (tx) => {
     await tx.shopSettings.createMany({
       data: [{ shopDomain }],
@@ -96,9 +98,10 @@ export function saveLowStockThreshold(
         | "updatedAt"
         | "locationsDiscoveredAt"
         | "shopDomain"
+        | "telegramChatId"
       >[]
     >`
-      SELECT "shopDomain", "locationGid", "lastSyncedAt", "lowStockThreshold", "updatedAt", "locationsDiscoveredAt"
+      SELECT "shopDomain", "locationGid", "lastSyncedAt", "lowStockThreshold", "updatedAt", "locationsDiscoveredAt", "telegramChatId"
       FROM "ShopSettings" WHERE "shopDomain" = ${shopDomain} FOR UPDATE
     `;
     if (current.lowStockThreshold === lowStockThreshold)
@@ -142,6 +145,7 @@ export function saveLowStockThreshold(
               !level.isLowStock && saved.isLowStock
                 ? "THRESHOLD_CHANGE"
                 : "INVENTORY_TRANSITION",
+              { key: digestKey, oldThreshold: current.lowStockThreshold },
             );
         }
         await resolveActiveAlerts(

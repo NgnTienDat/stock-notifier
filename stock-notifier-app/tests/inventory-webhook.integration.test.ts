@@ -111,14 +111,16 @@ function deploy() {
   );
 }
 async function oldRows() {
-  return db.$queryRaw`SELECT to_jsonb(a)-'resolutionReason' AS row FROM "InventoryAlert" a WHERE id='old-alert'`;
+  return db.$queryRaw`SELECT to_jsonb(a)-'resolutionReason'-'digestId' AS row FROM "InventoryAlert" a WHERE id='old-alert'`;
 }
 beforeAll(async () => {
   temp = mkdtempSync(join(tmpdir(), "stockpulse-m3-"));
   cpSync("prisma/schema.prisma", join(temp, "schema.prisma"));
   cpSync("prisma/migrations", join(temp, "migrations"), {
     recursive: true,
-    filter: (source) => !source.includes(migration),
+    filter: (source) =>
+      !source.includes("20261102030000_dashboard_digests") &&
+      !source.includes(migration),
   });
   await db.$executeRawUnsafe(`CREATE SCHEMA "${fixture.schema}"`);
   deploy();
@@ -133,6 +135,12 @@ beforeAll(async () => {
   cpSync(
     join("prisma/migrations", migration),
     join(temp, "migrations", migration),
+    { recursive: true },
+  );
+  deploy();
+  cpSync(
+    join("prisma/migrations", "20261102030000_dashboard_digests"),
+    join(temp, "migrations", "20261102030000_dashboard_digests"),
     { recursive: true },
   );
   deploy();

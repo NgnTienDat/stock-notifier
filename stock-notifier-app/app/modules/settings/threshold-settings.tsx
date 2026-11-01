@@ -36,8 +36,9 @@ export function ThresholdSettings({
           />
           <s-paragraph>
             Changing the threshold updates inventory status and closes alerts
-            that no longer apply. Newly low items create alerts held for a
-            future summary; they are not sent individually.
+            that no longer apply. Newly low items are grouped into one digest
+            for this threshold change when Telegram is configured; they are not
+            sent individually.
           </s-paragraph>
           {!saving && fetcher.data?.error && (
             <s-banner heading="Threshold was not saved" tone="critical">

@@ -71,7 +71,7 @@ async function legacyState() {
     levels: await db.inventoryLevel.findMany({ orderBy: { id: "asc" } }),
     alerts: await db.inventoryAlert.findMany({
       orderBy: { id: "asc" },
-      omit: { origin: true, resolutionReason: true },
+      omit: { origin: true, resolutionReason: true, digestId: true },
     }),
     events: await db.webhookEvent.findMany({
       orderBy: { id: "asc" },
@@ -88,8 +88,8 @@ async function legacyState() {
 function indexes() {
   return db.$queryRaw`
     SELECT indexname, indexdef FROM pg_indexes
-    WHERE schemaname = ${isolated.schema} AND tablename <> 'MonitoredLocation'
-    AND indexname <> 'WebhookEvent_nextAttemptAt_idx' ORDER BY indexname
+    WHERE schemaname = ${isolated.schema} AND tablename NOT IN ('MonitoredLocation', 'NotificationDigest')
+    AND indexname NOT IN ('WebhookEvent_nextAttemptAt_idx', 'InventoryAlert_digestId_idx') ORDER BY indexname
   `;
 }
 
@@ -99,6 +99,7 @@ beforeAll(async () => {
   cpSync("prisma/migrations", join(workspace, "migrations"), {
     recursive: true,
     filter: (source) =>
+      !source.includes("20261102030000_dashboard_digests") &&
       !source.includes(migration) &&
       !source.includes("20261102010000_multi_location_runtime") &&
       !source.includes("20261102020000_durable_location_webhooks"),
@@ -164,6 +165,12 @@ beforeAll(async () => {
   cpSync(
     join("prisma/migrations", "20261102020000_durable_location_webhooks"),
     join(workspace, "migrations", "20261102020000_durable_location_webhooks"),
+    { recursive: true },
+  );
+  deploy();
+  cpSync(
+    join("prisma/migrations", "20261102030000_dashboard_digests"),
+    join(workspace, "migrations", "20261102030000_dashboard_digests"),
     { recursive: true },
   );
   deploy();

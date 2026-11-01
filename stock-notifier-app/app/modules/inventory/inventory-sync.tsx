@@ -1,10 +1,49 @@
 import { useFetcher } from "react-router";
 import type { action } from "../../routes/app.inventory-sync";
 
-export function InventorySync({ busy }: { busy: boolean }) {
+export function InventorySync({
+  busy,
+  compact = false,
+}: {
+  busy: boolean;
+  compact?: boolean;
+}) {
   const fetcher = useFetcher<typeof action>();
   const syncing = fetcher.state !== "idle";
   const result = fetcher.data?.result;
+  if (compact)
+    return (
+      <>
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={() =>
+            fetcher.submit(
+              {},
+              { method: "post", action: "/app/inventory-sync" },
+            )
+          }
+          loading={syncing || undefined}
+          disabled={busy || syncing || undefined}
+        >
+          Sync all locations
+        </s-button>
+        {!syncing && fetcher.data?.error && (
+          <s-banner heading="Sync did not complete" tone="critical">
+            {fetcher.data.error}
+          </s-banner>
+        )}
+        {!syncing && result && (
+          <s-banner
+            heading="Sync complete"
+            tone={result.failedCount ? "warning" : "success"}
+          >
+            {result.itemCount} items synced; {result.failedCount} locations
+            failed. Retry failed locations in Settings.
+          </s-banner>
+        )}
+      </>
+    );
   return (
     <s-section heading="Inventory sync">
       <s-stack direction="block" gap="base">

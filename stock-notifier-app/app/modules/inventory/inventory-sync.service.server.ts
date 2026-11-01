@@ -5,6 +5,7 @@ import {
   commitInventorySync,
   getInventorySyncSettings,
   InventorySyncError,
+  recordInventorySyncFailure,
 } from "./inventory.repository.server";
 
 export { InventorySyncError } from "./inventory.repository.server";
@@ -40,28 +41,33 @@ export async function syncInventoryForLocation(
     );
   }
   const locationGid = settings.locationGid;
-  // No inventory writes or open database transaction while reading Shopify pages.
-  const levels = await createShopifyGraphqlService(context, {
-    signal: AbortSignal.timeout(60000),
-    requireAvailable: true,
-  }).getInventoryLevels(locationGid);
-  // Verify active again after the complete scan, including an empty scan.
-  if (
-    !(
-      await createShopifyGraphqlService(context, {
-        signal: AbortSignal.timeout(60000),
-      }).getLocations()
-    ).some((location) => location.locationGid === locationGid)
-  )
-    throw new InventorySyncError(
-      "Location no longer active after scan; retry discovery.",
+  try {
+    // No inventory writes or open database transaction while reading Shopify pages.
+    const levels = await createShopifyGraphqlService(context, {
+      signal: AbortSignal.timeout(60000),
+      requireAvailable: true,
+    }).getInventoryLevels(locationGid);
+    // Verify active again after the complete scan, including an empty scan.
+    if (
+      !(
+        await createShopifyGraphqlService(context, {
+          signal: AbortSignal.timeout(60000),
+        }).getLocations()
+      ).some((location) => location.locationGid === locationGid)
+    )
+      throw new InventorySyncError(
+        "Location no longer active after scan; retry discovery.",
+      );
+    return await commitInventorySync(
+      { ...settings, locationGid },
+      levels,
+      startedAt,
+      context.session.isOnline ? undefined : context.session.id,
     );
-  return commitInventorySync(
-    { ...settings, locationGid },
-    levels,
-    startedAt,
-    context.session.isOnline ? undefined : context.session.id,
-  );
+  } catch (error) {
+    await recordInventorySyncFailure({ ...settings, locationGid }, startedAt);
+    throw error;
+  }
 }
 
 export async function syncAllActiveLocations(

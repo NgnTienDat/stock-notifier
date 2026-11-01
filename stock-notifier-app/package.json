@@ -3,8 +3,8 @@
   "private": true,
   "scripts": {
     "test": "vitest run",
-    "test:unit": "vitest run tests/shopify-graphql.test.ts tests/location-settings.test.ts tests/alert-engine.test.ts tests/inventory-webhook.test.ts tests/telegram.test.ts tests/worker-startup.test.ts",
-    "test:integration": "vitest run tests/database.test.ts tests/location-settings.integration.test.ts tests/inventory-sync.integration.test.ts tests/alert-engine.integration.test.ts tests/inventory-webhook.integration.test.ts tests/notification.integration.test.ts tests/monitored-location.integration.test.ts tests/multi-location.integration.test.ts",
+    "test:unit": "vitest run tests/shopify-graphql.test.ts tests/location-settings.test.ts tests/alert-engine.test.ts tests/inventory-webhook.test.ts tests/telegram.test.ts tests/worker-startup.test.ts tests/dashboard.test.ts",
+    "test:integration": "vitest run tests/database.test.ts tests/location-settings.integration.test.ts tests/inventory-sync.integration.test.ts tests/alert-engine.integration.test.ts tests/inventory-webhook.integration.test.ts tests/notification.integration.test.ts tests/monitored-location.integration.test.ts tests/multi-location.integration.test.ts tests/dashboard-digest.integration.test.ts",
     "build": "react-router build && npm run build:worker",
     "build:worker": "vite build --config vite.worker.config.ts",
     "notifications:worker": "node build/worker/telegram.worker.js",

@@ -104,6 +104,7 @@ beforeAll(async () => {
   cpSync("prisma/migrations", join(workspace, "migrations"), {
     recursive: true,
     filter: (source) =>
+      !source.includes("20261102030000_dashboard_digests") &&
       !source.includes(migration) &&
       !source.includes("20261102020000_durable_location_webhooks"),
   });
@@ -121,6 +122,12 @@ beforeAll(async () => {
   cpSync(
     join("prisma/migrations", "20261102020000_durable_location_webhooks"),
     join(workspace, "migrations", "20261102020000_durable_location_webhooks"),
+    { recursive: true },
+  );
+  deploy();
+  cpSync(
+    join("prisma/migrations", "20261102030000_dashboard_digests"),
+    join(workspace, "migrations", "20261102030000_dashboard_digests"),
     { recursive: true },
   );
   deploy();
@@ -286,6 +293,29 @@ async function state() {
       orderBy: { id: "asc" },
     }),
   };
+}
+
+async function expectOnlyFailureMetadataChanged(
+  before: Awaited<ReturnType<typeof state>>,
+  locationGid: string,
+) {
+  const after = await state();
+  const failed = after.locations.find((l) => l.locationGid === locationGid)!;
+  expect(failed.lastSyncError).toContain("Sync failed");
+  expect(failed.lastSyncAttemptAt).toBeInstanceOf(Date);
+  expect(after).toEqual({
+    ...before,
+    locations: before.locations.map((l) =>
+      l.locationGid === locationGid
+        ? {
+            ...l,
+            lastSyncAttemptAt: failed.lastSyncAttemptAt,
+            lastSyncError: failed.lastSyncError,
+            updatedAt: failed.updatedAt,
+          }
+        : l,
+    ),
+  });
 }
 
 test("discovery completes all pages, filters inactive, preserves M1 baseline and isolates shops", async () => {
@@ -539,7 +569,7 @@ test("stale reads, lost activity, incomplete scans and transaction failures pres
   await expect(syncInventoryForLocation(context(), B)).rejects.toThrow(
     "API page",
   );
-  expect(await state()).toEqual(inactive);
+  await expectOnlyFailureMetadataChanged(inactive, B);
 });
 test("strict multi-location scan rejects missing available rather than treating it as zero/empty", async () => {
   await discoverLocations(context());
@@ -562,7 +592,7 @@ test("final active verification can reject a scan without touching previous snap
   await expect(syncInventoryForLocation(context(), A)).rejects.toThrow(
     "no longer active",
   );
-  expect(await state()).toEqual(before);
+  await expectOnlyFailureMetadataChanged(before, A);
 });
 
 test("retry is scoped to a verified location and respects the API deadline during backoff", async () => {

@@ -64,6 +64,26 @@ type SyncSettings = NonNullable<
   Awaited<ReturnType<typeof getInventorySyncSettings>>
 > & { locationGid: string };
 
+export function recordInventorySyncFailure(
+  settings: SyncSettings,
+  startedAt: Date,
+) {
+  if (!settings.monitored) return;
+  return db.monitoredLocation.updateMany({
+    where: {
+      shopDomain: settings.shopDomain,
+      locationGid: settings.locationGid,
+      version: settings.monitored.version,
+      isActive: true,
+    },
+    data: {
+      lastSyncAttemptAt: startedAt,
+      lastSyncError:
+        "Sync failed; previous snapshots were kept. Retry this location.",
+    },
+  });
+}
+
 export function commitInventorySync(
   settings: SyncSettings,
   levels: InventoryLevelData[],
@@ -215,6 +235,8 @@ export function commitInventorySync(
           where: { shopDomain_locationGid: scope },
           data: {
             lastSyncedAt: syncedAt,
+            lastSyncAttemptAt: startedAt,
+            lastSyncError: null,
             baselineCompletedAt:
               settings.monitored.baselineCompletedAt ?? syncedAt,
             baselineAlertsCompletedAt: syncedAt,

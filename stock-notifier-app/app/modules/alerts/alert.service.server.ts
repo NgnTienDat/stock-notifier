@@ -6,6 +6,10 @@ import type {
   ShopSettings,
 } from "@prisma/client";
 import { formatInventoryNotification } from "../notifications/telegram.server";
+import {
+  attachDigest,
+  type DigestOperation,
+} from "../notifications/digest.repository.server";
 
 type State = Pick<InventoryLevel, "isLowStock" | "isCurrent">;
 type Scope = Pick<InventoryLevel, "shopDomain" | "locationGid">;
@@ -54,6 +58,7 @@ export async function applyInventoryAlertTransition(
   current: AlertInventory,
   now: Date,
   origin: AlertOrigin = "INVENTORY_TRANSITION",
+  digestOperation?: DigestOperation,
 ) {
   if (
     current.shopDomain !== settings.shopDomain ||
@@ -110,6 +115,8 @@ export async function applyInventoryAlertTransition(
       ],
       skipDuplicates: true,
     });
+    if (count)
+      await attachDigest(tx, settings, current.id, origin, digestOperation);
     return { created: count, resolved: 0 };
   }
   return { created: 0, resolved: 0 };

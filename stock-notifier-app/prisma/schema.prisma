@@ -34,18 +34,19 @@ model Session {
 }
 
 model ShopSettings {
-  shopDomain            String              @id
+  shopDomain            String               @id
   locationGid           String?
   locationName          String?
   telegramChatId        String?
-  lastSyncedAt          DateTime?           @db.Timestamptz(3)
-  lowStockThreshold     Int                 @default(5)
-  createdAt             DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt             DateTime            @updatedAt @db.Timestamptz(3)
+  lastSyncedAt          DateTime?            @db.Timestamptz(3)
+  lowStockThreshold     Int                  @default(5)
+  createdAt             DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime             @updatedAt @db.Timestamptz(3)
   inventoryLevels       InventoryLevel[]
   webhookEvents         WebhookEvent[]
   monitoredLocations    MonitoredLocation[]
-  locationsDiscoveredAt DateTime?           @db.Timestamptz(3)
+  digests               NotificationDigest[]
+  locationsDiscoveredAt DateTime?            @db.Timestamptz(3)
 }
 
 model MonitoredLocation {
@@ -58,6 +59,8 @@ model MonitoredLocation {
   baselineCompletedAt       DateTime?          @db.Timestamptz(3)
   baselineAlertsCompletedAt DateTime?          @db.Timestamptz(3)
   lastSyncedAt              DateTime?          @db.Timestamptz(3)
+  lastSyncAttemptAt         DateTime?          @db.Timestamptz(3)
+  lastSyncError             String?
   // Future location writers increment this under a location lock; M1 does not dual-write.
   version                   BigInt             @default(0)
   generation                BigInt             @default(0)
@@ -111,11 +114,48 @@ model InventoryAlert {
   notificationLeaseUntil    DateTime?              @db.Timestamptz(3)
   notificationLeaseToken    String?
   notificationError         String?
+  digestId                  String?
+  digest                    NotificationDigest?    @relation(fields: [digestId], references: [id], onDelete: Restrict)
   inventoryLevel            InventoryLevel         @relation(fields: [inventoryLevelId], references: [id], onDelete: Restrict)
 
   // Enforced by a partial unique index in the SQL migration: one ACTIVE alert per item/location.
   @@index([inventoryLevelId])
   @@index([notificationNextAttemptAt])
+  @@index([digestId])
+}
+
+model NotificationDigest {
+  id            String           @id @default(cuid())
+  shopDomain    String
+  batchKey      String
+  origin        AlertOrigin
+  chatId        String
+  oldThreshold  Int?
+  newThreshold  Int
+  locations     Json
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+  availableAt   DateTime         @db.Timestamptz(3)
+  closedAt      DateTime?        @db.Timestamptz(3)
+  status        DigestStatus     @default(PENDING)
+  attempts      Int              @default(0)
+  nextAttemptAt DateTime?        @db.Timestamptz(3)
+  leaseUntil    DateTime?        @db.Timestamptz(3)
+  leaseToken    String?
+  notifiedAt    DateTime?        @db.Timestamptz(3)
+  text          String?
+  error         String?
+  shop          ShopSettings     @relation(fields: [shopDomain], references: [shopDomain], onDelete: Restrict)
+  alerts        InventoryAlert[]
+
+  @@unique([shopDomain, batchKey])
+  @@index([nextAttemptAt])
+}
+
+enum DigestStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELLED
 }
 
 model WebhookEvent {
