@@ -58,6 +58,18 @@ Press P to open the URL to your app. Once you click install, you can start devel
 
 Local development is powered by [the Shopify CLI](https://shopify.dev/docs/apps/tools/cli). It logs into your account, connects to an app, provides environment variables, updates remote config, creates a tunnel and provides commands to generate extensions.
 
+### StockPulse initial and manual inventory sync (Step 5)
+
+Open **Settings → Inventory sync → Sync now** after saving a location. The button shows progress and reports how many items were synced and how many old snapshots became inactive. Reloading retains the last successful sync time (shown in UTC). Only the authenticated shop's saved location is used; the sync endpoint accepts no client-supplied shop or location.
+
+The service reads every inventory and nested variant page into memory before opening a PostgreSQL transaction. It upserts one snapshot per `(shopDomain, locationGid, inventoryItemGid)`, preserves nullable SKU/zero/negative available quantities, stores all variant metadata, and calculates `isLowStock` with the inclusive threshold. Snapshots absent from a successful scan become `isCurrent = false`; their active alerts are resolved while history remains. A successful empty scan performs the same cleanup.
+
+GraphQL page failures and database failures leave the previous inventory, alert state and `lastSyncedAt` unchanged. Location changes and sync commits lock the same ShopSettings row. Its `updatedAt` advances monotonically and is checked again before commit, so an overlapping sync or A→B→A change invalidates an old scan, including changes in the same millisecond. Newer stored inventory also aborts an older scan rather than being overwritten or invalidated. Conflicts return an error asking the merchant to retry. Future settings/inventory writers must follow this locking/version protocol.
+
+The first sync with lastSyncedAt = null is a baseline, including after returning to a previous location. This step updates inventory snapshots and resolves alerts for invalidated items; creation of new low-stock alerts and manual-sync alert transitions belong to the next Alert Engine step. No webhook, Telegram, queue or cron is added. Shopify pagination remains a live remote read, not a transactional snapshot of Shopify.
+
+The new tests target hidden failure/concurrency behavior: partial inventory/variant scans, transaction rollback after upserts and cleanup, tenant/location isolation, simultaneous syncs, same-millisecond location changes, stale writes and baseline/history preservation. Existing GraphQL unit tests cover pagination; no new UI interaction tests were added.
+
 ### StockPulse location selection (Step 4)
 
 Open **Settings** in the embedded app navigation (`/app/settings`). Select one active location and save. Both the loader and action use `authenticate.admin(request)`; the action rechecks the current store's active Shopify locations, ignores client-supplied shop/name fields, and saves Shopify's location name to PostgreSQL.
