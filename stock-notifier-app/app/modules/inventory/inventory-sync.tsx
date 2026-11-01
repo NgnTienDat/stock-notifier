@@ -41,7 +41,8 @@ export function InventorySync({
             tone="success"
           >
             {result.itemCount} inventory items synced; {result.staleCount} old
-            snapshots marked inactive.
+            snapshots marked inactive. {result.alertsCreated} alerts created;{" "}
+            {result.alertsResolved} alerts resolved.
           </s-banner>
         )}
         <fetcher.Form method="post" action="/app/inventory-sync">

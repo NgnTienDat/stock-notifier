@@ -6,10 +6,12 @@ import type { AdminGraphqlClient } from "@shopify/shopify-app-react-router/serve
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticate } from "../app/shopify.server";
 import { loader, action } from "../app/routes/app.settings";
+import { action as thresholdAction } from "../app/routes/app.settings.threshold";
 import { LocationSelection } from "../app/modules/settings/location-selection";
 import {
   getLocationSettings,
   saveLocationSettings,
+  saveLowStockThreshold,
 } from "../app/modules/settings/settings.repository.server";
 import { LOCATIONS_QUERY } from "../app/modules/shopify/graphql/queries";
 
@@ -17,6 +19,7 @@ vi.mock("../app/shopify.server", () => ({ authenticate: { admin: vi.fn() } }));
 vi.mock("../app/modules/settings/settings.repository.server", () => ({
   getLocationSettings: vi.fn(),
   saveLocationSettings: vi.fn(),
+  saveLowStockThreshold: vi.fn(),
 }));
 
 const shop = "settings-fixture.myshopify.com";
@@ -67,6 +70,36 @@ const loadArgs = () =>
     context: {},
   }) as LoaderFunctionArgs;
 
+it("threshold action trusts only the authenticated shop and rejects duplicate/malformed values before persistence", async () => {
+  vi.mocked(saveLowStockThreshold).mockResolvedValue({ lowStockThreshold: 7 });
+  const submit = (form: URLSearchParams) =>
+    thresholdAction({
+      ...loadArgs(),
+      request: new Request("https://app.test/app/settings/threshold", {
+        method: "POST",
+        body: form,
+      }),
+    } as ActionFunctionArgs);
+  expect(
+    (
+      await submit(
+        new URLSearchParams({
+          lowStockThreshold: "7",
+          shop: "attacker.myshopify.com",
+        }),
+      )
+    ).data.saved,
+  ).toBe(true);
+  expect(saveLowStockThreshold).toHaveBeenCalledExactlyOnceWith(shop, 7);
+  for (const form of [
+    new URLSearchParams("lowStockThreshold=1&lowStockThreshold=2"),
+    new URLSearchParams("lowStockThreshold=-1"),
+  ]) {
+    const response = await submit(form);
+    expect(response.init?.status).toBe(400);
+  }
+  expect(saveLowStockThreshold).toHaveBeenCalledTimes(1);
+});
 function actionArgs(
   form: URLSearchParams | FormData = new URLSearchParams({ locationGid }),
 ) {
@@ -85,12 +118,14 @@ describe("location loader/action with the real GraphQL service", () => {
     vi.mocked(getLocationSettings).mockResolvedValue({
       ...selected,
       lastSyncedAt: null,
+      lowStockThreshold: 5,
     });
     const args = loadArgs();
     expect(await loader(args)).toEqual({
       selected: {
         ...selected,
         lastSyncedAt: null,
+        lowStockThreshold: 5,
       },
       locations: [selected],
       error: null,
@@ -108,6 +143,7 @@ describe("location loader/action with the real GraphQL service", () => {
     vi.mocked(getLocationSettings).mockResolvedValue({
       ...selected,
       lastSyncedAt: null,
+      lowStockThreshold: 5,
     });
     expect(await loader(loadArgs())).toMatchObject({
       selected,

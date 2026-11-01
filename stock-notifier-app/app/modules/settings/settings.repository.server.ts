@@ -1,6 +1,7 @@
 import type { ShopSettings } from "@prisma/client";
 import db from "../../db.server";
 import type { LocationData } from "../shopify/graphql/types";
+import { resolveActiveAlerts } from "../alerts/alert.service.server";
 
 const locationFields = { locationGid: true, locationName: true } as const;
 
@@ -10,6 +11,7 @@ export function getLocationSettings(shopDomain: string) {
     select: {
       ...locationFields,
       lastSyncedAt: true,
+      lowStockThreshold: true,
     },
   });
 }
@@ -34,10 +36,7 @@ export function saveLocationSettings(
     const changed = current.locationGid !== location.locationGid;
     if (changed && current.locationGid) {
       const scope = { shopDomain, locationGid: current.locationGid };
-      await tx.inventoryAlert.updateMany({
-        where: { status: "ACTIVE", inventoryLevel: scope },
-        data: { status: "RESOLVED", resolvedAt: new Date() },
-      });
+      await resolveActiveAlerts(tx, scope, {}, new Date());
       await tx.inventoryLevel.updateMany({
         where: scope,
         data: { isCurrent: false },
@@ -56,6 +55,69 @@ export function saveLocationSettings(
         ),
       },
       select: locationFields,
+    });
+  });
+}
+
+export function saveLowStockThreshold(
+  shopDomain: string,
+  lowStockThreshold: number,
+) {
+  return db.$transaction(async (tx) => {
+    await tx.shopSettings.createMany({
+      data: [{ shopDomain }],
+      skipDuplicates: true,
+    });
+    const [current] = await tx.$queryRaw<
+      Pick<
+        ShopSettings,
+        "locationGid" | "lastSyncedAt" | "lowStockThreshold" | "updatedAt"
+      >[]
+    >`
+      SELECT "locationGid", "lastSyncedAt", "lowStockThreshold", "updatedAt"
+      FROM "ShopSettings" WHERE "shopDomain" = ${shopDomain} FOR UPDATE
+    `;
+    if (current.lowStockThreshold === lowStockThreshold)
+      return { lowStockThreshold };
+    const now = new Date();
+    if (current.locationGid) {
+      const scope = { shopDomain, locationGid: current.locationGid };
+      if (current.lastSyncedAt) {
+        await tx.inventoryLevel.updateMany({
+          where: {
+            ...scope,
+            isCurrent: true,
+            availableQuantity: { lte: lowStockThreshold },
+          },
+          data: { isLowStock: true },
+        });
+        await tx.inventoryLevel.updateMany({
+          where: {
+            ...scope,
+            isCurrent: true,
+            availableQuantity: { gt: lowStockThreshold },
+          },
+          data: { isLowStock: false },
+        });
+      }
+      await resolveActiveAlerts(
+        tx,
+        scope,
+        current.lastSyncedAt
+          ? { OR: [{ isCurrent: false }, { isLowStock: false }] }
+          : {},
+        now,
+      );
+    }
+    return tx.shopSettings.update({
+      where: { shopDomain },
+      data: {
+        lowStockThreshold,
+        updatedAt: new Date(
+          Math.max(now.getTime(), current.updatedAt.getTime() + 1),
+        ),
+      },
+      select: { lowStockThreshold: true },
     });
   });
 }
