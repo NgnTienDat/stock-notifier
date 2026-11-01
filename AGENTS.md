@@ -30,7 +30,7 @@ If documents disagree, identify the conflict and ask before changing product beh
 - Scope every database read/write to the authenticated Shopify shop and selected inventory location.
 - Deduplicate and authenticate webhooks; guard against stale events and concurrent updates. Persist inventory and alert transitions atomically before sending Telegram.
 - Secrets belong in environment variables. Never commit credentials, tokens, `.env`, or local session data.
-- Do not introduce Redis, queues, microservices, AI, multi-location monitoring, advanced analytics, or production infrastructure for this MVP.
+- Do not introduce Redis, queues, microservices, AI, advanced analytics, or production infrastructure for this MVP. The approved multi-location upgrade starts with M1 database foundation only; runtime remains single-location until M2–M4.
 - Do not implement P1 features until P0 is working unless explicitly instructed.
 
 ## Workflow and verification

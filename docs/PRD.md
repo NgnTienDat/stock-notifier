@@ -16,7 +16,9 @@ Tài liệu liên quan: [Architecture](ARCHITECTURE.md) · [Database](DATABASE.m
 | P0 | Embedded UI | Dashboard inventory + Settings (location, threshold, Telegram, sync) |
 | P1 | Alert history | Danh sách alert, trạng thái `ACTIVE/RESOLVED`, `PENDING/SENT/FAILED` |
 
-Không làm: multi-location monitoring đồng thời, threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue/Redis, microservices, hosting production. Dùng auth/session chính thức của Shopify.
+Nâng cấp đã duyệt: tự động giám sát tất cả active locations qua M1–M4. **M1 chỉ thêm database/backfill `MonitoredLocation`**, chưa discovery hoặc chuyển runtime; các luồng một location bên dưới vẫn giữ nguyên đến phase sau.
+
+Không làm: threshold từng variant, tự điều chỉnh stock, purchase order, supplier, AI/forecasting, dashboard analytics, email, custom RBAC, queue/Redis, microservices, hosting production. Dùng auth/session chính thức của Shopify.
 
 ## 2. Luồng sử dụng
 

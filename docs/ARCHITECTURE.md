@@ -74,6 +74,8 @@ stock-notifier/
 
 ## 3. Shopify integration
 
+**M1 multi-location foundation:** thêm `MonitoredLocation` theo `(shopDomain, locationGid)`, chưa đổi Shopify API/UI/services. Các trường location/lastSyncedAt và lock `ShopSettings.updatedAt` vẫn là nguồn runtime. Version mới là PostgreSQL BIGINT/Prisma BigInt (default 0), độc lập timestamp, dành cho optimistic checks dưới location lock ở phase sau; M1 chưa dual-write hoặc dùng version này. Backfill chỉ là ảnh chụp lúc migration, không tự cập nhật theo sync/đổi location tiếp theo. M2 phải xác minh active qua Shopify và chuyển writers/readers/locking đồng bộ trước khi sử dụng dữ liệu mới.
+
 - Tối thiểu cần `read_inventory`, `read_products`. Xác minh fields/scopes/webhook trên **`2026-07`** và thêm `read_locations` **chỉ nếu** truy vấn thực tế yêu cầu. Không xin write scopes.
 - GraphQL: lấy active locations; lấy tracked inventory items, SKU, `available` tại selected location và toàn bộ `InventoryItem.variants` (kèm product metadata). Xử lý cursor pagination cả items và variants, variables và GraphQL errors; không dùng singular `variant` để giả định quan hệ 1:1.
 - Lưu `shopDomain` từ session đã xác thực, `locationGid` từ selected location; không tin shop ID do client truyền.

@@ -48,6 +48,23 @@ npm run lint
 npm run build
 ```
 
+### Phase M1: multi-location database foundation
+
+M1 adds `MonitoredLocation` with composite identity `(shopDomain, locationGid)`, nullable `isActive` (unknown until verified with Shopify), PENDING/READY baseline status, per-location timestamps and a BigInt version starting at 0. READY records a completed baseline, not verified activity. Existing Settings, sync, webhooks, alerts and Telegram continue to use the legacy ShopSettings location fields and lock/version protocol; M1 does not discover or monitor additional locations.
+
+Migration `20261102000000_monitored_location_foundation` creates the new table/type and backfills the selected location only. It copies the previous lastSyncedAt into baselineCompletedAt and lastSyncedAt, leaves activity unknown and skips conflicts. It does not alter old rows/indexes or call Shopify/Telegram. Existing monitored rows are preserved if the INSERT is repeated. This is a one-time backfill; legacy location/sync changes are not mirrored into this table until the runtime cutover in M2.
+
+```powershell
+npm exec -- prisma validate
+npm exec -- prisma generate
+npm exec -- prisma migrate status
+npm exec -- vitest run tests/monitored-location.integration.test.ts
+```
+
+The M1 suite uses a fresh randomly named PostgreSQL schema on the local Compose database. It deploys the previous migrations, inserts fixtures, applies M1 through Prisma migrate deploy, verifies backfill/preservation/legacy Settings and Sync, then drops only its own generated schema. No merchant rows or public schema are migrated by this test. The standard test:integration script includes it.
+
+On a database still running Step 8, migrate status reports M1 as pending until you intentionally apply committed migrations with `npm run setup`. Stop app/Prisma Studio first if Windows locks the Prisma engine DLL. M1 alone does not enable all-location monitoring; discovery, per-location runtime/locking and UI cutover remain M2–M4. Do not consume the backfill as current Shopify activity or a live sync marker before that cutover.
+
 ### Local Development
 
 ```shell

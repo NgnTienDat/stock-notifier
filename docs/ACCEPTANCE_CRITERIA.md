@@ -1,5 +1,7 @@
 # StockNotifier — MVP Acceptance Criteria
 
+**Gate M1 — Multi-location Database Foundation:** migration additive thực thi trên schema PostgreSQL cách ly; backfill shop có/không có location và baseline đúng; hoạt động location chưa xác minh là null; nhiều locations/shop, trùng GID khác shop hợp lệ, trùng composite key/foreign shop bị chặn. Session/settings/inventory/alerts/events/delivery metadata và indexes cũ giữ nguyên; Settings/Sync/alert/worker regression tests pass. M1 không bật discovery/multi-location runtime; các AC một location bên dưới vẫn áp dụng đến M2.
+
 Đây là checklist **để test thật**, không phải tuyên bố các chức năng đã hoàn thành. `P0` bắt buộc cho bản local sau 3 ngày; `P1` làm nếu còn thời gian. Tham chiếu business rules tại [PRD.md](PRD.md).
 
 ## 1. Acceptance checklist

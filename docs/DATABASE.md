@@ -1,6 +1,6 @@
 # StockNotifier — Database Design (Prisma + PostgreSQL)
 
-Một database phục vụ Shopify sessions và bốn bảng nghiệp vụ. Tên cột/model chi tiết có thể theo naming conventions của template; các **ràng buộc và quan hệ** dưới đây là yêu cầu.
+Một database phục vụ Shopify sessions và năm bảng nghiệp vụ sau M1 (thêm `MonitoredLocation`). Tên cột/model chi tiết có thể theo naming conventions của template; các **ràng buộc và quan hệ** dưới đây là yêu cầu.
 
 ## 1. ERD
 
@@ -8,6 +8,7 @@ Một database phục vụ Shopify sessions và bốn bảng nghiệp vụ. Tên
 erDiagram
     SHOP_SETTINGS ||--o{ INVENTORY_LEVEL : tracks
     SHOP_SETTINGS ||--o{ WEBHOOK_EVENT : receives
+    SHOP_SETTINGS ||--o{ MONITORED_LOCATION : monitors
     INVENTORY_LEVEL ||--o{ INVENTORY_ALERT : triggers
 
     SHOP_SETTINGS {
@@ -62,11 +63,14 @@ erDiagram
 | Model | Những field và constraint bắt buộc |
 | --- | --- |
 | `ShopSettings` | `shopDomain` PK; `locationGid?`, `locationName?`, `telegramChatId?`, `lastSyncedAt?`; mốc sync chỉ cập nhật sau full scan và transaction thành công, reset `null` khi đổi location; `lowStockThreshold Int @default(5)` với kiểm tra `>= 0`; timestamps tạo/sửa |
+| `MonitoredLocation` (M1) | PK `(shopDomain, locationGid)`; `shopDomain` FK tới ShopSettings (`RESTRICT` delete); `locationName?`; `isActive Boolean?` (`null` = chưa xác minh Shopify, `false` = đã xác minh inactive); `syncStatus = PENDING/READY` default PENDING; `baselineCompletedAt?`, `lastSyncedAt?`; `version BigInt` default 0; `createdAt`, `updatedAt`; timestamps `Timestamptz(3)`; không thêm index ngoài PK |
 | `InventoryLevel` | `id` PK; `shopDomain` FK; `locationGid`, `inventoryItemGid`, `variants Json`, `availableQuantity`, `isLowStock`, `isCurrent Boolean @default(true)`, `syncedAt`; `sku?`, `shopifyUpdatedAt?`; `@@unique([shopDomain, locationGid, inventoryItemGid])` |
 | `InventoryAlert` | `id` PK; `inventoryLevelId` FK; `quantityAtTrigger`, `thresholdAtTrigger`; `status = ACTIVE/RESOLVED`, `notificationStatus = PENDING/SENT/FAILED`; `triggeredAt`, `resolvedAt?`, `notifiedAt?`; notification metadata: `notificationChatId?`, `notificationText?`, `notificationAttempts` default 0, `notificationNextAttemptAt?` (index), `notificationLeaseUntil?`, `notificationLeaseToken?`, `notificationError?` |
 | `WebhookEvent` | `id` PK; `shopDomain` FK; `webhookId`; `processedAt`; `@@unique([shopDomain, webhookId])` |
 
-`InventoryLevel` lưu snapshot của từng item tại từng location **đã từng được chọn**. UI/webhook chỉ xử lý `ShopSettings.locationGid` hiện tại; lưu location cũ giúp giữ lịch sử alert mà không cascade delete. Đây không phải giám sát multi-location đồng thời.
+`InventoryLevel` lưu snapshot của từng item tại từng location **đã từng được chọn**. Trong M1, UI/webhook vẫn chỉ xử lý `ShopSettings.locationGid` hiện tại; chưa giám sát đa location đồng thời. Giữ composite key cũ và chưa thêm FK từ InventoryLevel sang MonitoredLocation: inventory lịch sử có thể chưa có location mới tương ứng. FK mới chỉ dùng shopDomain của chính bản ghi, không có shopId riêng có thể lệch tenant.
+
+Backfill M1 chỉ INSERT khi `ShopSettings.locationGid IS NOT NULL`, giữ nguyên GID/name/timestamps. Nếu `lastSyncedAt` có giá trị: sao chép sang `baselineCompletedAt` và `lastSyncedAt`, đặt READY (baseline từng hoàn tất, không khẳng định Shopify hiện active). Nếu null: PENDING và hai mốc null. `isActive` luôn null khi backfill, version 0; `ON CONFLICT DO NOTHING` giữ bản ghi đã có. Ba trường legacy trên ShopSettings tiếp tục được runtime sử dụng. Migration additive/transactional không đổi bảng/index/dữ liệu cũ, không gọi API hoặc gửi Telegram. M1 không có SYNCING/FAILED vì chưa có location sync runtime.
 
 `sku` thuộc Inventory Item. `variants` là mảng JSON có thể chứa nhiều phần tử `{ variantGid, variantTitle, productGid, productTitle }`; các GID là string. Metadata product/variant nằm trong mảng này, không có một bộ cột singular đại diện cho toàn item. Lấy đủ pagination của quan hệ `InventoryItem.variants` theo Shopify API `2026-07`.
 
