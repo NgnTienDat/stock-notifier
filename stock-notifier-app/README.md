@@ -58,6 +58,36 @@ Press P to open the URL to your app. Once you click install, you can start devel
 
 Local development is powered by [the Shopify CLI](https://shopify.dev/docs/apps/tools/cli). It logs into your account, connects to an app, provides environment variables, updates remote config, creates a tunnel and provides commands to generate extensions.
 
+### StockPulse location selection (Step 4)
+
+Open **Settings** in the embedded app navigation (`/app/settings`). Select one active location and save. Both the loader and action use `authenticate.admin(request)`; the action rechecks the current store's active Shopify locations, ignores client-supplied shop/name fields, and saves Shopify's location name to PostgreSQL.
+
+Reloading retains the saved choice. API failures retain the existing selection and show a retry action; a removed/inactive saved location is shown with a warning. Changing location locks the shop's settings row and atomically resolves only the old location's ACTIVE alerts, marks its snapshots `isCurrent = false`, and resets `lastSyncedAt`. Alert history and quantities remain intact. Saving the same location only refreshes its name and preserves the baseline. Saving does not run inventory sync or send Telegram.
+
+Use `127.0.0.1` in the local `DATABASE_URL`, matching Compose's port binding. Concurrent Prisma transaction tests failed to acquire a connection through `localhost` on the inspected Windows setup and passed through `127.0.0.1`.
+
+```powershell
+npm run test:unit
+npm run test:integration
+npm run typecheck
+npm run lint
+npm run build
+```
+
+The location integration suite executes loader/action with the real GraphQL service, mocked Shopify auth/responses and real local PostgreSQL. It verifies persistence with a fresh Prisma client, tenant/location isolation, rollback, concurrent selections and A→B→A without reusing a baseline. It only cleans up its uniquely named fixture shops.
+
+For an optional **read-only live loader probe**, first open the app with `npm run dev` so Shopify refreshes the offline session. In another PowerShell terminal:
+
+```powershell
+$env:SHOPIFY_LIVE_TEST = '1'
+npm exec -- vitest run tests/location-settings.live.test.ts
+Remove-Item Env:SHOPIFY_LIVE_TEST
+```
+
+This read-only probe injects the saved offline session at the authentication boundary and calls Shopify GraphQL through the actual Settings loader. It does not change settings, test browser authentication or refresh an expired token. Normal npm test skips this network-dependent probe.
+
+For the browser smoke test, select a location in Settings, save, reload and confirm the name remains selected. Change to a different location and verify `ShopSettings.locationGid/locationName`, `lastSyncedAt = null`, old snapshots no longer current and old ACTIVE alerts resolved. No sync or Telegram should occur.
+
 ### StockPulse GraphQL read service (Step 3)
 
 The server-only module is `app/modules/shopify/graphql/shopify-graphql.server.ts`. Pass the existing authenticated context; never accept a shop domain from the browser:
