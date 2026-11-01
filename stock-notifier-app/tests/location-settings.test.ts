@@ -119,6 +119,7 @@ describe("location loader/action with the real GraphQL service", () => {
       ...selected,
       lastSyncedAt: null,
       lowStockThreshold: 5,
+      telegramChatId: null,
     });
     const args = loadArgs();
     expect(await loader(args)).toEqual({
@@ -126,9 +127,11 @@ describe("location loader/action with the real GraphQL service", () => {
         ...selected,
         lastSyncedAt: null,
         lowStockThreshold: 5,
+        telegramChatId: null,
       },
       locations: [selected],
       error: null,
+      botConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()),
     });
     expect(authenticate.admin).toHaveBeenCalledWith(args.request);
     expect(getLocationSettings).toHaveBeenCalledWith(shop);
@@ -144,6 +147,7 @@ describe("location loader/action with the real GraphQL service", () => {
       ...selected,
       lastSyncedAt: null,
       lowStockThreshold: 5,
+      telegramChatId: null,
     });
     expect(await loader(loadArgs())).toMatchObject({
       selected,

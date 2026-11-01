@@ -1,6 +1,6 @@
 # StockNotifier — Technical Architecture
 
-Phạm vi: [PRD.md](PRD.md). Schema: [DATABASE.md](DATABASE.md). Đây là **modular monolith**, một app Node.js, một PostgreSQL; không triển khai worker, scheduler hay queue riêng cho MVP local.
+Phạm vi: [PRD.md](PRD.md). Schema: [DATABASE.md](DATABASE.md). Đây là **modular monolith**, một codebase Node.js và một PostgreSQL. Bước 8 bổ sung worker local dùng chung code/database để gửi Telegram bền vững; không thêm queue service hoặc scheduler ngoài.
 
 ## 1. Stack & conventions
 
@@ -136,14 +136,13 @@ flowchart TD
     V -->|Conflict| RETRY["Rollback; return 503 for retry"]
     V -->|Yes| F{"GraphQL snapshot older than stored?"}
     F -->|Yes| G["Mark delivery processed"]
-    F -->|No| H["Lock/upsert inventory; transition only after baseline"]
+    F -->|No| H["Upsert/invalidate inventory; shared alert transitions after baseline"]
     H --> G
     G --> I["Commit transaction"]
-    I --> J{"New alert PENDING?"}
-    J -->|No| OK
-    J -->|Yes| K["Send Telegram after commit"]
-    K --> L["Save SENT / FAILED"]
-    L --> OK
+    I --> OK
+    I -.-> WORKER["Separate local worker claims scheduled alert from PostgreSQL"]
+    WORKER --> K["Telegram outside DB transaction and webhook request"]
+    K --> L["Fenced update: SENT or FAILED + bounded retry"]
 ```
 
 **Quy tắc bắt buộc:**
@@ -151,8 +150,8 @@ flowchart TD
 1. Unique `(shopDomain, webhookId)`; ghi nhận delivery **trong cùng transaction** với inventory và alert. Nếu transaction lỗi, rollback delivery ID để Shopify có thể retry.
 2. Lock hàng inventory (hoặc atomic conditional update/serializable retry) khi đánh giá trạng thái; không tạo hai `ACTIVE` alerts do webhook đồng thời.
 3. Payload cũ chỉ kích hoạt đối soát GraphQL, không ghi trực tiếp. Snapshot GraphQL cũ hơn `shopifyUpdatedAt` đã lưu bị bỏ qua; timestamp bằng nhau dùng kết quả đọc GraphQL hiện tại. Đọc API ngoài transaction, sau đó lock ShopSettings và kiểm tra lại version/location/session trước commit, kể cả kết quả âm (deleted/disconnected). Mỗi inventory commit tăng `updatedAt` đơn điệu để vô hiệu hóa scan/read đồng thời, không đổi `lastSyncedAt` của full sync. Conflict trả 503 để Shopify retry; thiếu session/settings thì ACK và đối soát thủ công sau khi khôi phục auth. Uninstall xóa session dưới cùng shop lock.
-4. Database commit trước khi gọi Telegram. Telegram lỗi: lưu `FAILED`, webhook vẫn trả 2xx nếu DB đã commit. Nếu DB lỗi: trả lỗi 5xx để Shopify retry. Đặt timeout ngắn (ví dụ 2 giây) cho Telegram để webhook có thể phản hồi nhanh.
-5. `PENDING` sau crash có thể cần retry thủ công; crash đúng sau khi Telegram gửi nhưng trước khi ghi `SENT` có thể gây gửi lại. **Không cam kết exactly-once giữa PostgreSQL và Telegram**.
+4. Trong transaction tạo alert mới, chỉ lên lịch khi đã có bot token và Chat ID: lưu destination/text bất biến cùng alert. Webhook/sync không gọi hoặc chờ Telegram. Worker local poll PostgreSQL, claim bằng `FOR UPDATE SKIP LOCKED`, lease 30 giây và token riêng; gửi bằng native fetch ngoài transaction (timeout 2 giây), chỉ ghi SENT/notifiedAt sau API `ok:true`. Telegram lỗi không rollback inventory/webhook.
+5. Tối đa 3 lần claim/thử; retry lỗi transport, HTTP 429/5xx và API lỗi tạm thời sau 5/30 giây hoặc `retry_after` dài hơn. Lease/retry/finalize dùng đồng hồ PostgreSQL, token chặn stale worker; lease hết hạn được claim lại, hết lượt thành FAILED. Alert lịch sử hoặc tạo khi thiếu cấu hình có lịch NULL, không gửi hàng loạt khi cấu hình sau đó. Worker kiểm tra ACTIVE/current/selected location/session/Chat ID; job không còn hợp lệ bị hủy thành FAILED. Crash hoặc timeout sau khi Telegram đã nhận nhưng trước khi DB ghi SENT có thể gây gửi lại; không cam kết exactly-once. Thay cấu hình/resolve không thu hồi được HTTP send đang diễn ra.
 6. **Initial sync** khi `lastSyncedAt = null` chỉ thiết lập baseline, không tạo alert/gửi Telegram. **Sync Now tiếp theo** dùng chung Alert Engine với webhook; item mới hoặc trở lại current chỉ nhận baseline. Đổi threshold rebase `isLowStock` của items current sau baseline và resolve alerts không còn hợp lệ, không tạo alert mới. Mọi inventory/settings writer phải lock cùng hàng `ShopSettings`; sync kiểm tra lại `updatedAt` trước commit để hủy scan dùng cấu hình cũ. Inventory và alert transitions nằm trong cùng transaction; partial unique ACTIVE index là chốt chống trùng. Full sync và đổi location tuân theo mục 3.
 
 Webhook handler chỉ sử dụng source shop và event data đã xác thực. Secrets (`SHOPIFY_API_SECRET`, token Telegram, DB URL) trong `.env` local, không commit Git. Việc kiểm chứng behavior nằm trong [ACCEPTANCE_CRITERIA.md](ACCEPTANCE_CRITERIA.md).

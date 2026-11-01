@@ -21,7 +21,7 @@
 1. Đăng ký `inventory_levels/update`, `inventory_levels/connect`, `inventory_levels/disconnect` version `2026-07`; thử delivery thật từ Shopify.
 2. Xác thực HMAC theo template; lọc shop/location; unique delivery ID; chặn stale updates.
 3. Dùng transaction cho inventory update và state transition; bảo vệ một active alert/item dù có nhiều variants. Hoàn thiện transitions của Full Sync/threshold và đổi location: resolve alerts cũ, reset `lastSyncedAt`, baseline mới không gửi Telegram.
-4. Gửi Telegram sau commit; lưu `SENT/FAILED`; làm `Send Test Notification`.
+4. Ghi lịch Telegram cùng transaction alert; worker local dùng PostgreSQL lease/token để gửi ngoài webhook, retry tối đa 3 lần và lưu `SENT/FAILED`; làm `Send Test Notification`.
 5. Viết unit tests cho threshold, transition, dedup; integration test cho webhook duplicate/stale, full sync lỗi/race, nhiều variants/item và đổi location rồi quay lại.
 
 **Gate D2:** Chuyển `NORMAL → LOW_STOCK` gửi một thông báo thật/item; cùng đợt low-stock không gửi trùng; restock resolve; giảm tiếp tạo alert mới. Đổi location resolve alerts cũ, reset mốc sync và baseline mới không tạo alert/gửi Telegram; lịch sử còn nguyên.

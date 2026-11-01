@@ -65,19 +65,27 @@ model InventoryLevel {
 }
 
 model InventoryAlert {
-  id                 String             @id @default(cuid())
-  inventoryLevelId   String
-  quantityAtTrigger  Int
-  thresholdAtTrigger Int
-  status             AlertStatus        @default(ACTIVE)
-  notificationStatus NotificationStatus @default(PENDING)
-  triggeredAt        DateTime           @default(now()) @db.Timestamptz(3)
-  resolvedAt         DateTime?          @db.Timestamptz(3)
-  notifiedAt         DateTime?          @db.Timestamptz(3)
-  inventoryLevel     InventoryLevel     @relation(fields: [inventoryLevelId], references: [id], onDelete: Restrict)
+  id                        String             @id @default(cuid())
+  inventoryLevelId          String
+  quantityAtTrigger         Int
+  thresholdAtTrigger        Int
+  status                    AlertStatus        @default(ACTIVE)
+  notificationStatus        NotificationStatus @default(PENDING)
+  triggeredAt               DateTime           @default(now()) @db.Timestamptz(3)
+  resolvedAt                DateTime?          @db.Timestamptz(3)
+  notifiedAt                DateTime?          @db.Timestamptz(3)
+  notificationChatId        String?
+  notificationText          String?
+  notificationAttempts      Int                @default(0)
+  notificationNextAttemptAt DateTime?          @db.Timestamptz(3)
+  notificationLeaseUntil    DateTime?          @db.Timestamptz(3)
+  notificationLeaseToken    String?
+  notificationError         String?
+  inventoryLevel            InventoryLevel     @relation(fields: [inventoryLevelId], references: [id], onDelete: Restrict)
 
   // Enforced by a partial unique index in the SQL migration: one ACTIVE alert per item/location.
   @@index([inventoryLevelId])
+  @@index([notificationNextAttemptAt])
 }
 
 model WebhookEvent {

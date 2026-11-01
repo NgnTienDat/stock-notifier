@@ -12,6 +12,7 @@ export function getLocationSettings(shopDomain: string) {
       ...locationFields,
       lastSyncedAt: true,
       lowStockThreshold: true,
+      telegramChatId: true,
     },
   });
 }
@@ -118,6 +119,33 @@ export function saveLowStockThreshold(
         ),
       },
       select: { lowStockThreshold: true },
+    });
+  });
+}
+
+export function saveTelegramChatId(
+  shopDomain: string,
+  telegramChatId: string | null,
+) {
+  return db.$transaction(async (tx) => {
+    await tx.shopSettings.createMany({
+      data: [{ shopDomain }],
+      skipDuplicates: true,
+    });
+    const [current] = await tx.$queryRaw<
+      Pick<ShopSettings, "telegramChatId" | "updatedAt">[]
+    >`
+      SELECT "telegramChatId", "updatedAt" FROM "ShopSettings" WHERE "shopDomain" = ${shopDomain} FOR UPDATE
+    `;
+    if (current.telegramChatId === telegramChatId) return;
+    await tx.shopSettings.update({
+      where: { shopDomain },
+      data: {
+        telegramChatId,
+        updatedAt: new Date(
+          Math.max(Date.now(), current.updatedAt.getTime() + 1),
+        ),
+      },
     });
   });
 }

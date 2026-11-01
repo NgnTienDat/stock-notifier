@@ -39,7 +39,7 @@ Compose runs **only PostgreSQL 16**, on `127.0.0.1:5433`, with database/user `st
 
 `npm run setup` generates Prisma Client and applies committed PostgreSQL migrations. The original SQLite schema/migration are archived unchanged in `prisma/legacy-sqlite/`; the existing ignored `prisma/dev.sqlite` is retained, not imported or reset. Existing SQLite sessions would need a separate explicit transfer or Shopify reauthentication. This repository's inspected SQLite database contained 0 sessions during the conversion.
 
-Database tests use the local Compose database and only create/delete uniquely named fixture shops/sessions. They verify JSON variants, scoped unique keys, one ACTIVE alert, rollback, threshold checks, history FKs, and the official session adapter. They do not contact Shopify or Telegram, or implement sync/webhooks.
+Database tests use the local Compose database and only create/delete uniquely named fixture shops/sessions. Foundation tests verify JSON variants, scoped unique keys, one ACTIVE alert, rollback, threshold checks, history FKs, and the official session adapter. Settings/sync suites exercise the business services with mocked Shopify responses and real PostgreSQL; they do not contact Shopify or Telegram. The optional live probe below is read-only.
 
 ```powershell
 npm test
@@ -66,11 +66,11 @@ The service reads every inventory and nested variant page into memory before ope
 
 GraphQL page failures and database failures leave the previous inventory, alert state and `lastSyncedAt` unchanged. Location changes and sync commits lock the same ShopSettings row. Its `updatedAt` advances monotonically and is checked again before commit, so an overlapping sync or A→B→A change invalidates an old scan, including changes in the same millisecond. Newer stored inventory also aborts an older scan rather than being overwritten or invalidated. Conflicts return an error asking the merchant to retry. Future settings/inventory writers must follow this locking/version protocol.
 
-The first sync with `lastSyncedAt = null` is a baseline, including after returning to a previous location. The shared Alert Engine runs inside the inventory transaction on later manual syncs: normal → low creates one ACTIVE alert, continued low creates none, recovery resolves it, and the next low cycle creates a new historical record. First-seen/reactivated items only receive a baseline. Invalidated items have their active alerts resolved. The existing partial unique ACTIVE index prevents duplicates. New alerts have notificationStatus PENDING. This step does not send Telegram notifications. Shopify pagination remains a live remote read, not a transactional snapshot of Shopify.
+The first sync with `lastSyncedAt = null` is a baseline, including after returning to a previous location. The shared Alert Engine runs inside the inventory transaction on later manual syncs: normal → low creates one ACTIVE alert, continued low creates none, recovery resolves it, and the next low cycle creates a new historical record. First-seen/reactivated items only receive a baseline. Invalidated items have their active alerts resolved. The existing partial unique ACTIVE index prevents duplicates. New alerts have notificationStatus PENDING; Step 8 schedules delivery only when Telegram is already configured. Shopify pagination remains a live remote read, not a transactional snapshot of Shopify.
 
 Settings accepts a whole-number threshold from 0 to 2147483647. Changing it rebases current snapshots and resolves invalid active alerts in one transaction, without creating alerts, changing quantities or advancing lastSyncedAt. It invalidates any scan that started with the previous configuration.
 
-Manual Alert Engine check: on the selected Development Store location, set threshold 5 and sync a tracked item at quantity 6 as baseline. Change available quantity in Shopify and click Sync now for 5 → 3 → 8 → 4. In Prisma Studio, expect one ACTIVE alert at 5, the same alert at 3, that alert RESOLVED at 8, and a second ACTIVE alert at 4. Raising the threshold must only update isLowStock; lowering it must resolve alerts that are no longer low. Reload Settings to confirm the threshold persists. Try invalid input and a location change; the next sync after a location change creates no alerts. Telegram delivery is deferred to Step 8.
+Manual Alert Engine check: on the selected Development Store location, set threshold 5 and sync a tracked item at quantity 6 as baseline. Change available quantity in Shopify and click Sync now for 5 → 3 → 8 → 4. In Prisma Studio, expect one ACTIVE alert at 5, the same alert at 3, that alert RESOLVED at 8, and a second ACTIVE alert at 4. Raising the threshold must only update isLowStock; lowering it must resolve alerts that are no longer low. Reload Settings to confirm the threshold persists. Try invalid input and a location change; the next sync after a location change creates no alerts. Telegram is delivered only with the Step 8 configuration and worker below.
 
 The new tests target hidden failure/concurrency behavior: partial inventory/variant scans, transaction rollback after upserts and cleanup, tenant/location isolation, simultaneous syncs, same-millisecond location changes, stale writes and baseline/history preservation. Existing GraphQL unit tests cover pagination; no new UI interaction tests were added.
 
@@ -82,7 +82,7 @@ The route calls `authenticate.webhook(request)` before parsing business identifi
 
 GraphQL runs before opening a DB transaction. The commit locks ShopSettings, rechecks the offline session and captured updatedAt/location, then applies inventory, shared Alert Engine transitions and WebhookEvent atomically. Duplicate delivery IDs return 200; version conflicts, API/DB errors and timeouts return 503 without consuming the delivery ID. A newer stored Shopify timestamp wins over an older API read. Inventory changes advance ShopSettings.updatedAt monotonically, invalidating overlapping full scans and other webhook reads; lastSyncedAt remains exclusively the successful full-sync marker. New/reconnected items and events before the first full sync cannot create alerts. Uninstall session deletion uses the same shop lock. Missing sessions/settings are acknowledged and logged as ignored, without recording a processed delivery; reopen the installed app and use Sync now to reconcile after restoring a session.
 
-The route **awaits** durable processing; there is no fire-and-forget work. API reads share a 2.5-second abort signal across variant pages, with no in-request retry/backoff; DB commits have a 500ms pool/lock wait, 1s statement timeout and 1.5s transaction timeout. These budgets reduce risk but do not guarantee Shopify's five-second response deadline: SDK token refresh, cold starts, tunnel latency and bursts can exceed it. Shopify retries failed/time-out deliveries; deduplication makes post-commit retries safe. Minimal MVP recovery is to keep the dev tunnel running, refresh expired auth in Shopify Admin, inspect failed deliveries and run Sync now. Large variant lists that repeatedly exceed the budget require manual full sync, not an early 200 response. Telegram delivery is deferred to Step 8.
+The route **awaits** durable processing; there is no fire-and-forget work. API reads share a 2.5-second abort signal across variant pages, with no in-request retry/backoff; DB commits have a 500ms pool/lock wait, 1s statement timeout and 1.5s transaction timeout. These budgets reduce risk but do not guarantee Shopify's five-second response deadline: SDK token refresh, cold starts, tunnel latency and bursts can exceed it. Shopify retries failed/time-out deliveries; deduplication makes post-commit retries safe. Minimal MVP recovery is to keep the dev tunnel running, refresh expired auth in Shopify Admin, inspect failed deliveries and run Sync now. Large variant lists that repeatedly exceed the budget require manual full sync, not an early 200 response. Step 8 adds a separate local Telegram worker; the webhook never waits for Telegram.
 
 Real Development Store verification (changes inventory only when you perform these steps):
 
@@ -133,35 +133,58 @@ This probe injects the saved offline session context at the authentication bound
 
 For the browser smoke test, select a location in Settings, save, reload and confirm the name remains selected. Change to a different location and verify `ShopSettings.locationGid/locationName`, `lastSyncedAt = null`, old snapshots no longer current and old ACTIVE alerts resolved. No sync or Telegram should occur.
 
-### StockPulse location selection (Step 4)
+### StockPulse Telegram notifications (Step 8)
 
-Open **Settings** in the embedded app navigation (`/app/settings`). Select one active location and save. Both the loader and action use `authenticate.admin(request)`; the action rechecks the current store's active Shopify locations, ignores client-supplied shop/name fields, and saves Shopify's location name to PostgreSQL.
+Create a bot using Telegram's verified **@BotFather**, run `/newbot` and put its token in server-only `.env` as `TELEGRAM_BOT_TOKEN`. Never prefix it with `VITE_`, commit it, paste it into logs or include it in a client URL. Open your bot and press **Start**. For a group, add the bot and send a message in the group. Get the numeric `message.chat.id` with Bot API `getUpdates`; negative IDs identify groups/supergroups. An existing inbound webhook on the bot prevents getUpdates, so use a dedicated bot for this MVP.
 
-Reloading retains the saved choice. API failures retain the existing selection and show a retry action; a removed/inactive saved location is shown with a warning. Changing location locks the shop's settings row and atomically resolves only the old location's ACTIVE alerts, marks its snapshots `isCurrent = false`, and resets `lastSyncedAt`. Alert history and quantities remain intact. Saving the same location only refreshes its name and preserves the baseline. Saving does not run inventory sync or send Telegram.
-
-Use `127.0.0.1` in the local `DATABASE_URL`, matching Compose's port binding. Concurrent Prisma transaction tests failed to acquire a connection through `localhost` on the inspected Windows setup and passed through `127.0.0.1`.
+Optional local PowerShell lookup (Node 22; prints only Chat IDs, not the bot token or message text):
 
 ```powershell
-npm run test:unit
-npm run test:integration
-npm run typecheck
-npm run lint
+@'
+const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getUpdates`);
+const body = await response.json();
+if (!response.ok || !body.ok) throw new Error('getUpdates failed; check bot configuration.');
+console.log([...new Set(body.result.map(update => update.message?.chat?.id).filter(Boolean))]);
+'@ | node --env-file=.env --input-type=module
+```
+
+Close running app/Prisma Studio processes on Windows before regenerating Prisma Client (otherwise the engine DLL may be locked). Run from `stock-notifier-app/`:
+
+```powershell
+npm run setup
 npm run build
 ```
 
-The location integration suite executes loader/action with the real GraphQL service, mocked Shopify auth/responses and real local PostgreSQL. It verifies persistence with a fresh Prisma client, tenant/location isolation, rollback, concurrent selections and A→B→A without reusing a baseline. It only cleans up its uniquely named fixture shops.
-
-For an optional **read-only live loader probe**, first open the app with `npm run dev` so Shopify refreshes the offline session. In another PowerShell terminal:
+Then use separate terminals:
 
 ```powershell
-$env:SHOPIFY_LIVE_TEST = '1'
-npm exec -- vitest run tests/location-settings.live.test.ts
-Remove-Item Env:SHOPIFY_LIVE_TEST
+# Terminal 1: embedded app + inventory webhook tunnel
+npm run dev -- --config stock-notifier-app
+
+# Terminal 2: local notification worker, using the same .env and PostgreSQL
+npm run notifications:worker
 ```
 
-This read-only probe injects the saved offline session at the authentication boundary and calls Shopify GraphQL through the actual Settings loader. It does not change settings, test browser authentication or refresh an expired token. Normal npm test skips this network-dependent probe.
+The worker build uses the already installed Vite to compile server TypeScript and load/expand `.env`; it requires local development dependencies. Rebuild with `npm run build:worker` after worker code changes, and restart both app and worker after token changes. Stop the worker before running integration tests against this shared local DB; tests scope their mocked processors to uniquely named fixture shops.
 
-For the browser smoke test, select a location in Settings, save, reload and confirm the name remains selected. Change to a different location and verify `ShopSettings.locationGid/locationName`, `lastSyncedAt = null`, old snapshots no longer current and old ACTIVE alerts resolved. No sync or Telegram should occur.
+In **Settings → Telegram notifications**, save the numeric Chat ID and click **Send test message**. Test sends one bounded request directly from the authenticated Settings action, using the saved shop's Chat ID; it creates no InventoryAlert. Missing token/Chat ID displays incomplete configuration and does not break inventory sync/webhooks. Clearing Chat ID disables future scheduling. Configuration changes use the same shop lock/version protocol and preserve location, threshold and lastSyncedAt.
+
+Automatic delivery uses the existing InventoryAlert row as a durable outbox; no Redis, queue service, cron or new table is added. Only a newly created NORMAL → LOW_STOCK alert with token and Chat ID configured receives an immutable destination/text and notificationNextAttemptAt in the inventory transaction. All old alerts (including existing PENDING rows) have NULL schedule and are never drained when configuration is added later. Messages use plain text, contain product/variant metadata, nullable SKU, location and trigger quantity/threshold, and are capped at 4096 UTF-16 code units without cutting a surrogate pair.
+
+The worker polls once per second, processes at most one notification per configured shop per pass, and claims using PostgreSQL `FOR UPDATE SKIP LOCKED` with a 30-second lease and unique token. API send happens after claim commit, outside every DB transaction and outside the Shopify request. PostgreSQL time is used for leases, retry dates and finalization. SENT/notifiedAt is written only after Telegram returns ok:true, with a fenced token/lease check; concurrent/stale workers cannot overwrite the owner. Resolved/noncurrent/uninstalled or changed-destination jobs are canceled as FAILED when inspected, without sending. Disabling Telegram can leave unsent jobs dormant until the shop is inspected again.
+
+Each notification gets at most **3 claims/attempts**, including recovery after a crash. Native fetch has a **2-second timeout**. HTTP 429/5xx, Telegram ok:false with temporary error codes and transport failures become FAILED with durable retries after **5 seconds, then 30 seconds**, or Telegram's longer retry_after. Other API errors stop immediately. Restart preserves counters and due times; expired leases are reclaimable, and exhausted leases become terminal FAILED. Inspect notificationAttempts/NextAttemptAt/LeaseUntil/Error in Prisma Studio. After terminal failure, fix configuration and use Send test message; there is no bulk/manual retry UI for historical alerts. A later genuine normal → low cycle schedules a new alert.
+
+There is no exactly-once transaction across PostgreSQL and Telegram. A crash, lost response or timeout after Telegram accepts the message but before SENT is persisted can cause a duplicate on retry. A configuration/location change or restock cannot retract an HTTP send already in flight. Intermediate stock transitions can also be missed when Shopify API reads have already advanced; Sync now reconciles snapshots, not historical events.
+
+Live verification (not part of automated tests):
+
+1. Confirm you actually receive **Send test message** and that it creates no alert in Studio. This does not require the worker.
+2. Start the worker. With threshold 5, establish quantity 6 and a successful baseline, then change to 5. Without clicking Sync, expect one ACTIVE alert to move PENDING → SENT with notifiedAt and exactly one received message in the normal success path.
+3. Change 5 → 3: no new notification. Change 3 → 8: resolve only. Change 8 → 4: a new alert/message. Repeat a manual-sync transition to exercise the same scheduling path. Baseline and threshold changes alone produce no message.
+4. Stop the worker before creating another low transition: the scheduled alert stays PENDING. Restart and confirm delivery. Restarting must not send old rows with NULL schedule or already SENT alerts. Use mocked tests for crash-after-acceptance/timeout/429 rather than deliberately flooding Telegram.
+
+Automated tests always mock Telegram fetch; no bot credentials are required. They cover API errors/timeout, scheduling rollback, baseline/threshold rules, tenant isolation, competing workers, restart leases, stale tokens and bounded retry. **Live Telegram is not verified until a message is actually received.** References: [Bot setup](https://core.telegram.org/bots/tutorial#obtain-your-bot-token), [sendMessage](https://core.telegram.org/bots/api#sendmessage), [retry_after](https://core.telegram.org/bots/api#responseparameters).
 
 ### StockPulse GraphQL read service (Step 3)
 
@@ -176,7 +199,7 @@ const levels = await shopifyReads.getInventoryLevels(selectedLocationGid);
 const item = await shopifyReads.getInventoryItem(inventoryItemGid);
 ```
 
-`getLocations()` returns active locations. `getInventoryLevels()` returns one record per tracked item at that location, including `availableQuantity`, nullable SKU, the complete variants metadata array and `shopifyUpdatedAt` as a Date. The Shopify `inventoryLevelGid` stays intact, including `?inventory_item_id=...`; it is separate from Prisma's app-owned `id`. Alert state, `isCurrent` and sync timestamps belong to the later sync milestone. This module performs no database writes.
+`getLocations()` returns active locations. `getInventoryLevels()` returns one record per tracked item at that location, including `availableQuantity`, nullable SKU, the complete variants metadata array and `shopifyUpdatedAt` as a Date. The Shopify `inventoryLevelGid` stays intact, including `?inventory_item_id=...`; it is separate from Prisma's app-owned `id`. The inventory sync module supplies `isCurrent`, `isLowStock` and sync timestamps. This GraphQL read module performs no database writes.
 
 Missing/untracked/inactive levels or missing `available` are omitted, never turned into zero. Zero and negative quantities are retained. A missing item returns `null`; a nullable variants connection becomes `[]`. A missing/inactive location, failure on any page, or an item disappearing during variant pagination rejects the entire read. GraphQL errors reject even with partial data. HTTP 429/5xx and GraphQL `THROTTLED` get at most three attempts; retries use `Retry-After` or query-cost/restore-rate data when supplied, with fallback backoff. Authentication Responses propagate unchanged. Shopify pagination is a live read, not a transactional snapshot of the remote store.
 

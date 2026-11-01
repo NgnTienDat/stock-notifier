@@ -23,6 +23,7 @@ import {
 import { LocationSelection } from "../modules/settings/location-selection";
 import { InventorySync } from "../modules/inventory/inventory-sync";
 import { ThresholdSettings } from "../modules/settings/threshold-settings";
+import { TelegramSettings } from "../modules/settings/telegram-settings";
 import type { LocationData } from "../modules/shopify/graphql/types";
 
 function preserveAuthenticationResponse(error: unknown) {
@@ -42,11 +43,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       selected,
       locations,
       error: null,
+      botConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()),
     };
   } catch (error) {
     preserveAuthenticationResponse(error);
     return {
       selected,
+      botConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()),
       locations: [] as LocationData[],
       error: "Could not load locations from Shopify. Please try again.",
     };
@@ -83,7 +86,8 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function Settings() {
-  const { selected, locations, error } = useLoaderData<typeof loader>();
+  const { selected, locations, error, botConfigured } =
+    useLoaderData<typeof loader>();
   const result = useActionData<typeof action>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
@@ -114,6 +118,11 @@ export default function Settings() {
         key={selected?.locationGid ?? "unselected"}
         locationGid={selected?.locationGid ?? null}
         lastSyncedAt={selected?.lastSyncedAt ?? null}
+        busy={busy}
+      />
+      <TelegramSettings
+        chatId={selected?.telegramChatId ?? null}
+        botConfigured={botConfigured}
         busy={busy}
       />
     </s-page>

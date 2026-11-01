@@ -23,6 +23,8 @@ export function getInventorySyncSettings(shopDomain: string) {
       shopDomain: true,
       locationGid: true,
       lowStockThreshold: true,
+      telegramChatId: true,
+      locationName: true,
       lastSyncedAt: true,
       updatedAt: true,
     },

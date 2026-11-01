@@ -63,7 +63,7 @@ erDiagram
 | --- | --- |
 | `ShopSettings` | `shopDomain` PK; `locationGid?`, `locationName?`, `telegramChatId?`, `lastSyncedAt?`; mốc sync chỉ cập nhật sau full scan và transaction thành công, reset `null` khi đổi location; `lowStockThreshold Int @default(5)` với kiểm tra `>= 0`; timestamps tạo/sửa |
 | `InventoryLevel` | `id` PK; `shopDomain` FK; `locationGid`, `inventoryItemGid`, `variants Json`, `availableQuantity`, `isLowStock`, `isCurrent Boolean @default(true)`, `syncedAt`; `sku?`, `shopifyUpdatedAt?`; `@@unique([shopDomain, locationGid, inventoryItemGid])` |
-| `InventoryAlert` | `id` PK; `inventoryLevelId` FK; `quantityAtTrigger`, `thresholdAtTrigger`; `status = ACTIVE/RESOLVED`, `notificationStatus = PENDING/SENT/FAILED`; `triggeredAt`, `resolvedAt?`, `notifiedAt?` |
+| `InventoryAlert` | `id` PK; `inventoryLevelId` FK; `quantityAtTrigger`, `thresholdAtTrigger`; `status = ACTIVE/RESOLVED`, `notificationStatus = PENDING/SENT/FAILED`; `triggeredAt`, `resolvedAt?`, `notifiedAt?`; notification metadata: `notificationChatId?`, `notificationText?`, `notificationAttempts` default 0, `notificationNextAttemptAt?` (index), `notificationLeaseUntil?`, `notificationLeaseToken?`, `notificationError?` |
 | `WebhookEvent` | `id` PK; `shopDomain` FK; `webhookId`; `processedAt`; `@@unique([shopDomain, webhookId])` |
 
 `InventoryLevel` lưu snapshot của từng item tại từng location **đã từng được chọn**. UI/webhook chỉ xử lý `ShopSettings.locationGid` hiện tại; lưu location cũ giúp giữ lịch sử alert mà không cascade delete. Đây không phải giám sát multi-location đồng thời.
@@ -83,4 +83,4 @@ erDiagram
 9. Đổi location atomically resolve active alerts location cũ, đánh dấu snapshots cũ `isCurrent = false`, chuyển selected location và reset `lastSyncedAt = null`. Lần sync kế tiếp tạo baseline mới, không tạo alert/gửi Telegram, kể cả chọn lại location từng dùng.
 10. Dashboard và threshold evaluation chỉ dùng rows `isCurrent = true` của selected location sau baseline; rows lịch sử vẫn giữ FK với alerts.
 
-Không thêm bảng notification deliveries, retry jobs hoặc history inventory trong MVP; `InventoryAlert.notificationStatus` đủ cho màn hình kiểm tra. Xem transaction và retry giới hạn tại [ARCHITECTURE.md](ARCHITECTURE.md).
+Không thêm bảng notification deliveries, retry jobs hoặc history inventory. Bước 8 thêm các cột delivery ngay trên InventoryAlert: lịch NULL nghĩa là không lên lịch (bao gồm mọi alert cũ), tối đa 3 lần thử, lease 30 giây và token fencing. Alert/job được ghi atomic; destination/text chụp tại trigger, tránh gửi metadata/Chat ID của cấu hình khác. Không thay đổi Session hoặc partial unique ACTIVE index. Xem transaction và retry giới hạn tại [ARCHITECTURE.md](ARCHITECTURE.md).
