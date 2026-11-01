@@ -19,7 +19,7 @@
 | AC11 | P0 | `Send Test` và low-stock gửi Telegram thật đến Chat ID đã cấu hình | Kiểm tra Telegram chat |
 | AC12 | P0 | Telegram lỗi không rollback quantity/alert; lưu trạng thái `FAILED` | Mock Telegram 500/timeout |
 | AC13 | P0 | Dashboard hiển thị quantity, SKU, metadata variants từ JSON, status, KPI tính theo item, filter và last sync từ DB; chỉ dùng `isCurrent = true` tại selected location | UI smoke test với nhiều variants/item và rows không còn current |
-| AC14 | P0 | Threshold chỉ nhận số nguyên không âm, default 5; sau baseline, đổi threshold tính lại items current, tạo alert khi vừa chuyển sang low-stock | Form + DB + notification mock; trước baseline không tạo alert/gửi Telegram tự động |
+| AC14 | P0 | Threshold là số nguyên 0–2147483647, default 5; đổi threshold rebase items current tại selected location và resolve alerts không còn hợp lệ; không tạo alert/gửi Telegram chỉ vì đổi cấu hình | Form kiểm tra thủ công; integration test rebase, rollback, scope và scan dùng threshold cũ; trước baseline không đánh giá transition |
 | AC15 | P0 | Đổi location atomically resolve alerts cũ, đặt snapshots cũ `isCurrent = false`, chuyển scope, reset `lastSyncedAt = null`; initial sync location mới là baseline không tạo alert/gửi Telegram, giữ lịch sử | Đổi location A→B→A, kể cả sync mới thất bại: không dùng baseline cũ, không lẫn dữ liệu hoặc gửi alert trước baseline thành công |
 | AC16 | P0 | Initial sync tạo baseline không tạo alert/gửi Telegram; Sync Now về sau phát hiện transition bị lỡ, tạo/resolve alert tương ứng | Spy Telegram + DB assertions |
 | AC17 | P0 | Typecheck, unit tests, integration tests và build chạy thành công; README có lệnh chạy local | Lưu command + exit code |

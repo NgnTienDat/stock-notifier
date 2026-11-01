@@ -155,6 +155,7 @@ test("loader -> GraphQL service -> action -> PostgreSQL -> reload retains the ch
     locationGid: locationA,
     locationName: "Warehouse 1",
     lastSyncedAt: null,
+    lowStockThreshold: 5,
   });
   const freshClient = new PrismaClient();
   try {

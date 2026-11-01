@@ -1,6 +1,10 @@
 import type { ShopSettings } from "@prisma/client";
 import db from "../../db.server";
 import type { InventoryLevelData } from "../shopify/graphql/types";
+import {
+  applyInventoryAlertTransition,
+  resolveActiveAlerts,
+} from "../alerts/alert.service.server";
 
 export class InventorySyncError extends Error {
   constructor(
@@ -94,6 +98,8 @@ export function commitInventorySync(
       }
 
       const syncedAt = new Date();
+      let alertsCreated = 0;
+      let alertsResolved = 0;
       for (const level of levels) {
         const data = {
           variants: level.variants,
@@ -104,7 +110,7 @@ export function commitInventorySync(
           shopifyUpdatedAt: level.shopifyUpdatedAt,
           syncedAt,
         };
-        await tx.inventoryLevel.upsert({
+        const saved = await tx.inventoryLevel.upsert({
           where: {
             shopDomain_locationGid_inventoryItemGid: {
               ...scope,
@@ -118,6 +124,15 @@ export function commitInventorySync(
           },
           update: data,
         });
+        const alerts = await applyInventoryAlertTransition(
+          tx,
+          settings,
+          byItem.get(level.inventoryItemGid) ?? null,
+          saved,
+          syncedAt,
+        );
+        alertsCreated += alerts.created;
+        alertsResolved += alerts.resolved;
       }
 
       const missing = { ...scope, inventoryItemGid: { notIn: itemIds } };
@@ -125,10 +140,7 @@ export function commitInventorySync(
         where: { ...missing, isCurrent: true },
         data: { isCurrent: false },
       });
-      await tx.inventoryAlert.updateMany({
-        where: { status: "ACTIVE", inventoryLevel: missing },
-        data: { status: "RESOLVED", resolvedAt: syncedAt },
-      });
+      alertsResolved += await resolveActiveAlerts(tx, scope, missing, syncedAt);
       await tx.shopSettings.update({
         where: { shopDomain: settings.shopDomain },
         data: {
@@ -143,6 +155,8 @@ export function commitInventorySync(
         staleCount: stale.count,
         baseline: settings.lastSyncedAt === null,
         syncedAt,
+        alertsCreated,
+        alertsResolved,
       };
     },
     { timeout: 15000 },

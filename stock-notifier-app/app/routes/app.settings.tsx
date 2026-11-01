@@ -22,6 +22,7 @@ import {
 } from "../modules/settings/settings.service.server";
 import { LocationSelection } from "../modules/settings/location-selection";
 import { InventorySync } from "../modules/inventory/inventory-sync";
+import { ThresholdSettings } from "../modules/settings/threshold-settings";
 import type { LocationData } from "../modules/shopify/graphql/types";
 
 function preserveAuthenticationResponse(error: unknown) {
@@ -105,6 +106,10 @@ export default function Settings() {
           onRetry={() => revalidator.revalidate()}
         />
       </Form>
+      <ThresholdSettings
+        threshold={selected?.lowStockThreshold ?? 5}
+        busy={busy}
+      />
       <InventorySync
         key={selected?.locationGid ?? "unselected"}
         locationGid={selected?.locationGid ?? null}
