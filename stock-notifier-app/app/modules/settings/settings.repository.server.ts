@@ -1,7 +1,10 @@
 import type { ShopSettings } from "@prisma/client";
 import db from "../../db.server";
 import type { LocationData } from "../shopify/graphql/types";
-import { resolveActiveAlerts } from "../alerts/alert.service.server";
+import {
+  applyInventoryAlertTransition,
+  resolveActiveAlerts,
+} from "../alerts/alert.service.server";
 
 const locationFields = { locationGid: true, locationName: true } as const;
 
@@ -28,14 +31,17 @@ export function saveLocationSettings(
     });
     // Serialize location changes for this shop, including the first selection.
     const [current] = await tx.$queryRaw<
-      Pick<ShopSettings, "locationGid" | "updatedAt">[]
+      Pick<
+        ShopSettings,
+        "locationGid" | "updatedAt" | "locationsDiscoveredAt"
+      >[]
     >`
-      SELECT "locationGid", "updatedAt" FROM "ShopSettings"
+      SELECT "locationGid", "updatedAt", "locationsDiscoveredAt" FROM "ShopSettings"
       WHERE "shopDomain" = ${shopDomain} FOR UPDATE
     `;
 
     const changed = current.locationGid !== location.locationGid;
-    if (changed && current.locationGid) {
+    if (!current.locationsDiscoveredAt && changed && current.locationGid) {
       const scope = { shopDomain, locationGid: current.locationGid };
       await resolveActiveAlerts(tx, scope, {}, new Date());
       await tx.inventoryLevel.updateMany({
@@ -49,7 +55,9 @@ export function saveLocationSettings(
       data: {
         locationGid: location.locationGid,
         locationName: location.locationName,
-        ...(changed ? { lastSyncedAt: null } : {}),
+        ...(!current.locationsDiscoveredAt && changed
+          ? { lastSyncedAt: null }
+          : {}),
         // Invalidate scans even for A -> B -> A within the same millisecond.
         updatedAt: new Date(
           Math.max(Date.now(), current.updatedAt.getTime() + 1),
@@ -72,16 +80,66 @@ export function saveLowStockThreshold(
     const [current] = await tx.$queryRaw<
       Pick<
         ShopSettings,
-        "locationGid" | "lastSyncedAt" | "lowStockThreshold" | "updatedAt"
+        | "locationGid"
+        | "lastSyncedAt"
+        | "lowStockThreshold"
+        | "updatedAt"
+        | "locationsDiscoveredAt"
+        | "shopDomain"
       >[]
     >`
-      SELECT "locationGid", "lastSyncedAt", "lowStockThreshold", "updatedAt"
+      SELECT "shopDomain", "locationGid", "lastSyncedAt", "lowStockThreshold", "updatedAt", "locationsDiscoveredAt"
       FROM "ShopSettings" WHERE "shopDomain" = ${shopDomain} FOR UPDATE
     `;
     if (current.lowStockThreshold === lowStockThreshold)
       return { lowStockThreshold };
     const now = new Date();
-    if (current.locationGid) {
+    if (current.locationsDiscoveredAt) {
+      const locations = await tx.$queryRaw<
+        { locationGid: string; baselineCompletedAt: Date | null }[]
+      >`
+        SELECT "locationGid", "baselineCompletedAt" FROM "MonitoredLocation"
+        WHERE "shopDomain" = ${shopDomain} AND "isActive" = true ORDER BY "locationGid" FOR UPDATE
+      `;
+      for (const location of locations) {
+        const scope = { shopDomain, locationGid: location.locationGid };
+        const levels = await tx.inventoryLevel.findMany({
+          where: { ...scope, isCurrent: true },
+        });
+        for (const level of levels) {
+          const saved = await tx.inventoryLevel.update({
+            where: { id: level.id },
+            data: { isLowStock: level.availableQuantity <= lowStockThreshold },
+          });
+          if (location.baselineCompletedAt)
+            await applyInventoryAlertTransition(
+              tx,
+              {
+                ...current,
+                ...scope,
+                lastSyncedAt: location.baselineCompletedAt,
+                lowStockThreshold,
+              },
+              level,
+              saved,
+              now,
+              !level.isLowStock && saved.isLowStock
+                ? "THRESHOLD_CHANGE"
+                : "INVENTORY_TRANSITION",
+            );
+        }
+        await resolveActiveAlerts(
+          tx,
+          scope,
+          { OR: [{ isCurrent: false }, { isLowStock: false }] },
+          now,
+        );
+        await tx.monitoredLocation.update({
+          where: { shopDomain_locationGid: scope },
+          data: { version: { increment: 1 } },
+        });
+      }
+    } else if (current.locationGid) {
       const scope = { shopDomain, locationGid: current.locationGid };
       if (current.lastSyncedAt) {
         await tx.inventoryLevel.updateMany({

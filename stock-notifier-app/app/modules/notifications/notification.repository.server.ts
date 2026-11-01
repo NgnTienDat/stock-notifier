@@ -12,11 +12,13 @@ type Claim = {
 };
 
 const eligible = Prisma.sql`
-  a."status" = 'ACTIVE' AND a."notificationChatId" IS NOT NULL AND a."notificationText" IS NOT NULL
+  a."origin" = 'INVENTORY_TRANSITION' AND a."status" = 'ACTIVE' AND a."notificationChatId" IS NOT NULL AND a."notificationText" IS NOT NULL
   AND EXISTS (
     SELECT 1 FROM "InventoryLevel" i JOIN "ShopSettings" s ON s."shopDomain" = i."shopDomain"
     WHERE i.id = a."inventoryLevelId" AND i."isCurrent" AND i."isLowStock"
-      AND i."locationGid" = s."locationGid" AND s."lastSyncedAt" IS NOT NULL
+      AND ((s."locationsDiscoveredAt" IS NULL AND i."locationGid" = s."locationGid" AND s."lastSyncedAt" IS NOT NULL)
+        OR EXISTS (SELECT 1 FROM "MonitoredLocation" ml WHERE ml."shopDomain" = i."shopDomain"
+          AND ml."locationGid" = i."locationGid" AND ml."isActive" AND ml."baselineCompletedAt" IS NOT NULL))
       AND s."telegramChatId" = a."notificationChatId"
       AND EXISTS (SELECT 1 FROM "Session" se WHERE se.shop = s."shopDomain" AND NOT se."isOnline")
   )`;
@@ -29,6 +31,7 @@ export function claimNotification(shopDomain: string) {
         "notificationNextAttemptAt" = NULL, "notificationLeaseUntil" = NULL, "notificationLeaseToken" = NULL,
         "notificationError" = 'Notification no longer eligible or retry limit reached.'
       WHERE a."notificationNextAttemptAt" IS NOT NULL AND a."notificationStatus" <> 'SENT'
+        AND a."origin" = 'INVENTORY_TRANSITION'
         AND (a."notificationLeaseUntil" IS NULL OR a."notificationLeaseUntil" <= NOW())
         AND EXISTS (SELECT 1 FROM "InventoryLevel" i WHERE i.id = a."inventoryLevelId" AND i."shopDomain" = ${shopDomain})
         AND (a."notificationAttempts" >= ${MAX_NOTIFICATION_ATTEMPTS} OR NOT (${eligible}))

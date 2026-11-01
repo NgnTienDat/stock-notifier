@@ -19,8 +19,19 @@ import type {
   PageInfo,
 } from "./types";
 
-const sleep = (milliseconds: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const sleep = (milliseconds: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    signal?.throwIfAborted();
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 export class ShopifyGraphqlError extends Error {
   constructor(
@@ -66,7 +77,11 @@ function retryDelay(
 /** Reuse the authenticated admin/webhook context; no new auth or DB client. */
 export function createShopifyGraphqlService(
   { admin, session }: Pick<AdminContext, "admin" | "session">,
-  options: { signal?: AbortSignal; maxRetries?: number } = {},
+  options: {
+    signal?: AbortSignal;
+    maxRetries?: number;
+    requireAvailable?: boolean;
+  } = {},
 ) {
   async function query<T>(
     operation: string,
@@ -115,6 +130,7 @@ export function createShopifyGraphqlService(
                   )?.[1];
             await sleep(
               retryDelay(attempt, value == null ? null : String(value)),
+              options.signal,
             );
             continue;
           }
@@ -141,6 +157,7 @@ export function createShopifyGraphqlService(
               retryDelay(attempt),
               Number.isFinite(costDelay) ? costDelay : 0,
             ),
+            options.signal,
           );
           continue;
         }
@@ -207,6 +224,17 @@ export function createShopifyGraphqlService(
       });
       if (!data.locations)
         throw new ShopifyGraphqlError("Shopify returned null locations");
+      if (
+        data.locations.nodes.some(
+          (location) =>
+            typeof location.isActive !== "boolean" ||
+            typeof location.id !== "string" ||
+            typeof location.name !== "string",
+        )
+      )
+        throw new ShopifyGraphqlError(
+          "Shopify returned incomplete location metadata",
+        );
       locations.push(
         ...data.locations.nodes
           .filter((location) => location.isActive)
@@ -215,6 +243,11 @@ export function createShopifyGraphqlService(
             locationName: location.name,
           })),
       );
+      if (
+        new Set(locations.map((location) => location.locationGid)).size !==
+        locations.length
+      )
+        throw new ShopifyGraphqlError("Shopify returned duplicate locations");
       after = nextCursor(data.locations.pageInfo, seen);
     } while (after);
     return locations;
@@ -264,6 +297,15 @@ export function createShopifyGraphqlService(
         const quantity = level.quantities.find(
           (value) => value.name === "available",
         )?.quantity;
+        if (
+          level.isActive &&
+          level.item.tracked &&
+          quantity == null &&
+          options.requireAvailable
+        )
+          throw new ShopifyGraphqlError(
+            "Shopify omitted available quantity; retry scan.",
+          );
         if (!level.isActive || !level.item.tracked || quantity == null)
           continue;
         const updatedAt = new Date(level.updatedAt);

@@ -19,7 +19,7 @@ export function ThresholdSettings({
         <s-stack direction="block" gap="base">
           <s-paragraph>
             Inventory at or below this quantity is low stock. This threshold
-            applies to your selected location.
+            applies to all monitored locations.
           </s-paragraph>
           <label htmlFor="lowStockThreshold">Low-stock threshold</label>
           <input
@@ -36,7 +36,8 @@ export function ThresholdSettings({
           />
           <s-paragraph>
             Changing the threshold updates inventory status and closes alerts
-            that no longer apply. It does not create new alerts.
+            that no longer apply. Newly low items create alerts held for a
+            future summary; they are not sent individually.
           </s-paragraph>
           {!saving && fetcher.data?.error && (
             <s-banner heading="Threshold was not saved" tone="critical">

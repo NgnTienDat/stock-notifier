@@ -1,4 +1,9 @@
-import type { InventoryLevel, Prisma, ShopSettings } from "@prisma/client";
+import type {
+  AlertOrigin,
+  InventoryLevel,
+  Prisma,
+  ShopSettings,
+} from "@prisma/client";
 import { formatInventoryNotification } from "../notifications/telegram.server";
 
 type State = Pick<InventoryLevel, "isLowStock" | "isCurrent">;
@@ -46,6 +51,7 @@ export async function applyInventoryAlertTransition(
   previous: State | null,
   current: AlertInventory,
   now: Date,
+  origin: AlertOrigin = "INVENTORY_TRANSITION",
 ) {
   if (
     current.shopDomain !== settings.shopDomain ||
@@ -55,11 +61,12 @@ export async function applyInventoryAlertTransition(
       "Alert inventory does not belong to the selected shop/location",
     );
   }
-  const transition = getAlertTransition(
-    previous,
-    current,
-    settings.lastSyncedAt !== null,
-  );
+  const transition =
+    origin !== "INVENTORY_TRANSITION" && current.isCurrent
+      ? current.isLowStock
+        ? "create"
+        : "resolve"
+      : getAlertTransition(previous, current, settings.lastSyncedAt !== null);
   if (transition === "resolve") {
     return {
       created: 0,
@@ -73,7 +80,9 @@ export async function applyInventoryAlertTransition(
   }
   if (transition === "create") {
     const configured = Boolean(
-      process.env.TELEGRAM_BOT_TOKEN?.trim() && settings.telegramChatId,
+      origin === "INVENTORY_TRANSITION" &&
+      process.env.TELEGRAM_BOT_TOKEN?.trim() &&
+      settings.telegramChatId,
     );
     // ON CONFLICT DO NOTHING honors the existing partial unique ACTIVE-alert index.
     const { count } = await tx.inventoryAlert.createMany({
@@ -83,6 +92,7 @@ export async function applyInventoryAlertTransition(
           quantityAtTrigger: current.availableQuantity,
           thresholdAtTrigger: settings.lowStockThreshold,
           triggeredAt: now,
+          origin,
           notificationChatId: configured ? settings.telegramChatId : null,
           notificationText: configured
             ? formatInventoryNotification({

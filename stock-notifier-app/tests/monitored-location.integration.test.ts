@@ -66,9 +66,13 @@ async function legacyState() {
     sessions: await db.session.findMany({ orderBy: { id: "asc" } }),
     settings: await db.shopSettings.findMany({
       orderBy: { shopDomain: "asc" },
+      omit: { locationsDiscoveredAt: true },
     }),
     levels: await db.inventoryLevel.findMany({ orderBy: { id: "asc" } }),
-    alerts: await db.inventoryAlert.findMany({ orderBy: { id: "asc" } }),
+    alerts: await db.inventoryAlert.findMany({
+      orderBy: { id: "asc" },
+      omit: { origin: true },
+    }),
     events: await db.webhookEvent.findMany({ orderBy: { id: "asc" } }),
   };
 }
@@ -86,7 +90,9 @@ beforeAll(async () => {
   cpSync("prisma/schema.prisma", join(workspace, "schema.prisma"));
   cpSync("prisma/migrations", join(workspace, "migrations"), {
     recursive: true,
-    filter: (source) => !source.includes(migration),
+    filter: (source) =>
+      !source.includes(migration) &&
+      !source.includes("20261102010000_multi_location_runtime"),
   });
   await db.$executeRawUnsafe(`CREATE SCHEMA "${isolated.schema}"`);
   deploy();
@@ -123,32 +129,14 @@ beforeAll(async () => {
       syncedAt: lastSyncedAt,
     },
   });
-  await db.inventoryAlert.createMany({
-    data: [
-      {
-        inventoryLevelId: level.id,
-        quantityAtTrigger: 3,
-        thresholdAtTrigger: 5,
-        notificationChatId: "-100123",
-        notificationText: "Fixture only",
-        notificationAttempts: 2,
-        notificationStatus: "FAILED",
-        notificationNextAttemptAt: lastSyncedAt,
-        notificationLeaseUntil: lastSyncedAt,
-        notificationLeaseToken: "fixture-lease",
-        notificationError: "Fixture error",
-      },
-      {
-        inventoryLevelId: level.id,
-        quantityAtTrigger: 4,
-        thresholdAtTrigger: 5,
-        status: "RESOLVED",
-        resolvedAt: lastSyncedAt,
-        notificationStatus: "SENT",
-        notifiedAt: lastSyncedAt,
-      },
-    ],
-  });
+  // Seed the pre-M2 shape: current Prisma defaults include origin, which did not exist yet.
+  await db.$executeRaw`INSERT INTO "InventoryAlert" (
+    id,"inventoryLevelId","quantityAtTrigger","thresholdAtTrigger","notificationChatId","notificationText",
+    "notificationAttempts","notificationStatus","notificationNextAttemptAt","notificationLeaseUntil","notificationLeaseToken","notificationError"
+  ) VALUES ('m1-active',${level.id},3,5,'-100123','Fixture only',2,'FAILED',${lastSyncedAt},${lastSyncedAt},'fixture-lease','Fixture error')`;
+  await db.$executeRaw`INSERT INTO "InventoryAlert" (
+    id,"inventoryLevelId","quantityAtTrigger","thresholdAtTrigger",status,"resolvedAt","notificationStatus","notifiedAt"
+  ) VALUES ('m1-resolved',${level.id},4,5,'RESOLVED',${lastSyncedAt},'SENT',${lastSyncedAt})`;
   await db.webhookEvent.create({
     data: { shopDomain: shops[0], webhookId: "fixture-delivery" },
   });
@@ -157,6 +145,12 @@ beforeAll(async () => {
   cpSync(
     join("prisma/migrations", migration),
     join(workspace, "migrations", migration),
+    { recursive: true },
+  );
+  deploy();
+  cpSync(
+    join("prisma/migrations", "20261102010000_multi_location_runtime"),
+    join(workspace, "migrations", "20261102010000_multi_location_runtime"),
     { recursive: true },
   );
   deploy();

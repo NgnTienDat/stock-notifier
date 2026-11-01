@@ -48,7 +48,38 @@ npm run lint
 npm run build
 ```
 
+### Phase M2: automatic discovery and multi-location sync
+
+All active Shopify locations are monitored after the first successful complete discovery. Settings no longer requires choosing a monitored location; Sync now discovers and scans every active location, reports individual failures, and keeps successful locations committed. No Dashboard or digest is added. The older Step 1-8 sections below describe pre-discovery compatibility behavior and are superseded by this section after cutover.
+
+Run from stock-notifier-app/ after stopping app/Studio/worker processes if Windows locks Prisma's engine:
+
+```powershell
+npm run setup
+npm test
+npm run build
+npm run dev -- --config stock-notifier-app
+# Separate terminal: automatic discovery/sync, no Telegram sends in this process
+npm run inventory:worker
+# Separate terminal, only when real Telegram delivery is intended
+npm run notifications:worker
+```
+
+The inventory worker reuses the existing worker entry/build with --inventory, uses official unauthenticated.admin(shop) with shop domains from stored offline sessions, and runs independently of the Telegram process so long scans do not delay notification polling. Configure SHOPIFY_API_KEY, SHOPIFY_API_SECRET and a valid SHOPIFY_APP_URL in its private environment/.env to match the active CLI app configuration. It needs an installed app/offline session; reopen the embedded app after expired/revoked auth. Never provide a browser-supplied shop domain to background auth.
+
+Shopify CLI injects credentials and the tunnel URL into the app dev process only. A worker started in another terminal does not inherit them. Before starting it, set these in the ignored `.env`: `SHOPIFY_API_KEY` to the active app TOML's `client_id`, `SHOPIFY_API_SECRET` to the secret for that same app from the Shopify Dev Dashboard, and `SHOPIFY_APP_URL` to the current HTTPS tunnel URL printed by `npm run dev`. Do not use the Shopify Admin/store URL or send secrets in chat. Update APP_URL and restart the worker when the tunnel changes. Missing/invalid configuration now stops the worker with a configuration message before importing the SDK or accessing the database. Rebuild with `npm run build:worker` after worker code changes. Use Node.js 22 LTS (>=22.12) as configured by this project.
+
+One pass scans shops/locations sequentially, then waits 60 seconds. Successful locations less than 60 seconds old are skipped on background restart; failed locations retain their last committed state and retry next pass. GraphQL retries HTTP 429/5xx/THROTTLED up to three attempts; version conflicts refetch at most twice per location. Full scans and final active verification happen outside PostgreSQL transactions with bounded API time. Duplicate processes may do redundant reads, but per-location versions reject stale commits. This is polling reconciliation and can miss intermediate inventory transitions; M3 adds full all-location realtime/lifecycle routing. Existing inventory webhooks still route only the legacy selected location, use the new location fencing after discovery and preserve deduplication. No TOML topics changed.
+
+Lock order is shop then location: sync uses shop FOR SHARE for stable settings and location FOR UPDATE/version check. Threshold/discovery/uninstall acquire the shop write lock. Shared threshold and Chat ID changes invalidate captured shop.updatedAt; committed inventory changes increment only the location BigInt version. Shopify pagination is a live read, so a remote change after final active verification remains possible; M3 reconciliation is still required. A slow full scan may exceed an embedded HTTP request timeout: use the durable database-driven inventory worker to reconcile rather than fire-and-forget HTTP work.
+
+Migration 20261102010000_multi_location_runtime adds locationsDiscoveredAt (cutover/discovery fencing), baselineAlertsCompletedAt (one-time M1 catch-up), and AlertOrigin. Existing alerts default to INVENTORY_TRANSITION, retaining all jobs/lease metadata. Low items on first baseline, first-seen/reactivated items and M1 catch-up create BASELINE ACTIVE alerts without duplicate ACTIVE rows. Increasing the shared threshold creates THRESHOLD_CHANGE alerts across active monitored locations. Both origins remain PENDING with no individual schedule; the Telegram worker explicitly excludes them even if accidentally scheduled. They await a durable digest in M4; no SENT/FAILED is invented. Normal inventory transitions retain existing individual Telegram delivery/retry/lease behavior at every monitored active location. Legacy preference changes after discovery do not invalidate snapshots or resolve alerts.
+
+The PostgreSQL M2 suite creates a random isolated schema, deploys old migrations and M2, mocks Shopify/Telegram, and verifies discovery pagination/failures, independent commits, concurrency/fencing, legacy catch-up and delivery safety. Old repository tests also cover pre-discovery compatibility. Manual development-store check: open app, start inventory worker, verify all active MonitoredLocation records and independent lastSyncedAt; inspect low baseline alerts with origin BASELINE and NULL notificationNextAttemptAt. Change quantity above then below threshold at a non-legacy location and wait for the next worker pass: expect an INVENTORY_TRANSITION alert. Increasing threshold should create THRESHOLD_CHANGE without individual messages. Pause a scan or simulate API failure in tests, rather than changing merchant data to test rollback. Live Shopify/Telegram verification must be reported separately from mocked tests.
+
 ### Phase M1: multi-location database foundation
+
+The M1 section describes the historical database-only phase. Current runtime follows M2 below.
 
 M1 adds `MonitoredLocation` with composite identity `(shopDomain, locationGid)`, nullable `isActive` (unknown until verified with Shopify), PENDING/READY baseline status, per-location timestamps and a BigInt version starting at 0. READY records a completed baseline, not verified activity. Existing Settings, sync, webhooks, alerts and Telegram continue to use the legacy ShopSettings location fields and lock/version protocol; M1 does not discover or monitor additional locations.
 

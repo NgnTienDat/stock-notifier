@@ -27,10 +27,10 @@ If documents disagree, identify the conflict and ask before changing product beh
 - Follow the official Shopify React Router template; TypeScript strict, React, Prisma, PostgreSQL, Telegram Bot API, and tests using the project's configured runner.
 - Use Shopify Admin **GraphQL** API and template authentication/session handling. Verify version-specific API fields, scopes, and webhook topics against official Shopify docs.
 - Keep routes thin: authentication, input validation, response; put business logic in services and persistence in repositories/Prisma access.
-- Scope every database read/write to the authenticated Shopify shop and selected inventory location.
+- Scope every database read/write to the authenticated Shopify shop and the monitored inventory location; legacy selection is only a compatibility/display preference after discovery.
 - Deduplicate and authenticate webhooks; guard against stale events and concurrent updates. Persist inventory and alert transitions atomically before sending Telegram.
 - Secrets belong in environment variables. Never commit credentials, tokens, `.env`, or local session data.
-- Do not introduce Redis, queues, microservices, AI, advanced analytics, or production infrastructure for this MVP. The approved multi-location upgrade starts with M1 database foundation only; runtime remains single-location until M2–M4.
+- Do not introduce Redis, queues, microservices, AI, advanced analytics, or production infrastructure for this MVP. M2 adds automatic discovery/sync for all active locations; all-location webhook routing remains M3, Dashboard/digests M4.
 - Do not implement P1 features until P0 is working unless explicitly instructed.
 
 ## Workflow and verification

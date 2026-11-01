@@ -1,4 +1,8 @@
-import type { InventoryLevel, ShopSettings } from "@prisma/client";
+import type {
+  InventoryLevel,
+  MonitoredLocation,
+  ShopSettings,
+} from "@prisma/client";
 import db from "../../db.server";
 import { applyInventoryAlertTransition } from "../alerts/alert.service.server";
 import type { InventoryLevelData } from "../shopify/graphql/types";
@@ -49,6 +53,19 @@ export function commitInventoryWebhook(
         }))
       ) {
         return "session_missing";
+      }
+      if (settings.monitored) {
+        const [location] = await tx.$queryRaw<MonitoredLocation[]>`
+          SELECT * FROM "MonitoredLocation" WHERE "shopDomain" = ${settings.shopDomain}
+          AND "locationGid" = ${settings.monitored.locationGid} FOR UPDATE
+        `;
+        if (
+          !location?.isActive ||
+          location.version !== settings.monitored.version
+        )
+          throw new Error(
+            "Location changed during webhook read; retry required",
+          );
       }
       if (
         current.updatedAt.getTime() !== settings.updatedAt.getTime() ||
@@ -111,20 +128,31 @@ export function commitInventoryWebhook(
           if (saved)
             await applyInventoryAlertTransition(
               tx,
-              current,
+              settings.monitored ? settings : current,
               previous,
               saved,
               now,
             );
           // Invalidate in-flight full scans and other webhook reads, including negative reads.
-          await tx.shopSettings.update({
-            where: { shopDomain: current.shopDomain },
-            data: {
-              updatedAt: new Date(
-                Math.max(now.getTime(), current.updatedAt.getTime() + 1),
-              ),
-            },
-          });
+          if (settings.monitored)
+            await tx.monitoredLocation.update({
+              where: {
+                shopDomain_locationGid: {
+                  shopDomain: settings.shopDomain,
+                  locationGid,
+                },
+              },
+              data: { version: { increment: 1 } },
+            });
+          else
+            await tx.shopSettings.update({
+              where: { shopDomain: current.shopDomain },
+              data: {
+                updatedAt: new Date(
+                  Math.max(now.getTime(), current.updatedAt.getTime() + 1),
+                ),
+              },
+            });
           result = level ? "updated" : "invalidated";
         }
       }

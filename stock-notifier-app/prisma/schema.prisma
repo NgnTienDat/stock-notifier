@@ -34,33 +34,35 @@ model Session {
 }
 
 model ShopSettings {
-  shopDomain         String              @id
-  locationGid        String?
-  locationName       String?
-  telegramChatId     String?
-  lastSyncedAt       DateTime?           @db.Timestamptz(3)
-  lowStockThreshold  Int                 @default(5)
-  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
-  inventoryLevels    InventoryLevel[]
-  webhookEvents      WebhookEvent[]
-  monitoredLocations MonitoredLocation[]
+  shopDomain            String              @id
+  locationGid           String?
+  locationName          String?
+  telegramChatId        String?
+  lastSyncedAt          DateTime?           @db.Timestamptz(3)
+  lowStockThreshold     Int                 @default(5)
+  createdAt             DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime            @updatedAt @db.Timestamptz(3)
+  inventoryLevels       InventoryLevel[]
+  webhookEvents         WebhookEvent[]
+  monitoredLocations    MonitoredLocation[]
+  locationsDiscoveredAt DateTime?           @db.Timestamptz(3)
 }
 
 model MonitoredLocation {
-  shopDomain          String
-  locationGid         String
-  locationName        String?
+  shopDomain                String
+  locationGid               String
+  locationName              String?
   // NULL means Shopify activity has not been verified, including migrated locations.
-  isActive            Boolean?
-  syncStatus          LocationSyncStatus @default(PENDING)
-  baselineCompletedAt DateTime?          @db.Timestamptz(3)
-  lastSyncedAt        DateTime?          @db.Timestamptz(3)
+  isActive                  Boolean?
+  syncStatus                LocationSyncStatus @default(PENDING)
+  baselineCompletedAt       DateTime?          @db.Timestamptz(3)
+  baselineAlertsCompletedAt DateTime?          @db.Timestamptz(3)
+  lastSyncedAt              DateTime?          @db.Timestamptz(3)
   // Future location writers increment this under a location lock; M1 does not dual-write.
-  version             BigInt             @default(0)
-  createdAt           DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt           DateTime           @updatedAt @db.Timestamptz(3)
-  shop                ShopSettings       @relation(fields: [shopDomain], references: [shopDomain], onDelete: Restrict)
+  version                   BigInt             @default(0)
+  createdAt                 DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime           @updatedAt @db.Timestamptz(3)
+  shop                      ShopSettings       @relation(fields: [shopDomain], references: [shopDomain], onDelete: Restrict)
 
   @@id([shopDomain, locationGid])
 }
@@ -94,6 +96,7 @@ model InventoryAlert {
   quantityAtTrigger         Int
   thresholdAtTrigger        Int
   status                    AlertStatus        @default(ACTIVE)
+  origin                    AlertOrigin        @default(INVENTORY_TRANSITION)
   notificationStatus        NotificationStatus @default(PENDING)
   triggeredAt               DateTime           @default(now()) @db.Timestamptz(3)
   resolvedAt                DateTime?          @db.Timestamptz(3)
@@ -125,6 +128,12 @@ model WebhookEvent {
 enum AlertStatus {
   ACTIVE
   RESOLVED
+}
+
+enum AlertOrigin {
+  BASELINE
+  INVENTORY_TRANSITION
+  THRESHOLD_CHANGE
 }
 
 enum NotificationStatus {

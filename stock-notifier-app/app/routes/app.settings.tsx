@@ -5,8 +5,6 @@ import type {
 } from "react-router";
 import {
   data,
-  Form,
-  useActionData,
   useFetchers,
   useLoaderData,
   useNavigation,
@@ -20,7 +18,7 @@ import {
   InvalidLocationError,
   selectLocation,
 } from "../modules/settings/settings.service.server";
-import { LocationSelection } from "../modules/settings/location-selection";
+
 import { InventorySync } from "../modules/inventory/inventory-sync";
 import { ThresholdSettings } from "../modules/settings/threshold-settings";
 import { TelegramSettings } from "../modules/settings/telegram-settings";
@@ -88,7 +86,7 @@ export async function action({ request }: ActionFunctionArgs) {
 export default function Settings() {
   const { selected, locations, error, botConfigured } =
     useLoaderData<typeof loader>();
-  const result = useActionData<typeof action>();
+
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const fetchers = useFetchers();
@@ -99,27 +97,23 @@ export default function Settings() {
 
   return (
     <s-page heading="StockPulse settings">
-      <Form method="post">
-        <LocationSelection
-          key={`${selected?.locationGid ?? "unselected"}:${locations.length > 0}`}
-          selected={selected}
-          locations={locations}
-          error={error ?? result?.error ?? null}
-          saved={result?.saved ?? false}
-          busy={busy}
-          onRetry={() => revalidator.revalidate()}
-        />
-      </Form>
+      <s-section heading="Automatic location monitoring">
+        <s-paragraph>
+          All active Shopify locations are monitored automatically. Start the
+          inventory worker for background discovery and sync, or use Sync now.
+        </s-paragraph>
+        {error && (
+          <s-banner heading="Locations could not be loaded" tone="critical">
+            {error}
+          </s-banner>
+        )}
+        <s-paragraph>{locations.length} active Shopify locations.</s-paragraph>
+      </s-section>
       <ThresholdSettings
         threshold={selected?.lowStockThreshold ?? 5}
         busy={busy}
       />
-      <InventorySync
-        key={selected?.locationGid ?? "unselected"}
-        locationGid={selected?.locationGid ?? null}
-        lastSyncedAt={selected?.lastSyncedAt ?? null}
-        busy={busy}
-      />
+      <InventorySync busy={busy} />
       <TelegramSettings
         chatId={selected?.telegramChatId ?? null}
         botConfigured={botConfigured}
