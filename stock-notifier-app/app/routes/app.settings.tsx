@@ -7,6 +7,7 @@ import {
   data,
   Form,
   useActionData,
+  useFetchers,
   useLoaderData,
   useNavigation,
   useRevalidator,
@@ -20,6 +21,7 @@ import {
   selectLocation,
 } from "../modules/settings/settings.service.server";
 import { LocationSelection } from "../modules/settings/location-selection";
+import { InventorySync } from "../modules/inventory/inventory-sync";
 import type { LocationData } from "../modules/shopify/graphql/types";
 
 function preserveAuthenticationResponse(error: unknown) {
@@ -84,7 +86,11 @@ export default function Settings() {
   const result = useActionData<typeof action>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
-  const busy = navigation.state !== "idle" || revalidator.state !== "idle";
+  const fetchers = useFetchers();
+  const busy =
+    navigation.state !== "idle" ||
+    revalidator.state !== "idle" ||
+    fetchers.some((fetcher) => fetcher.state !== "idle");
 
   return (
     <s-page heading="StockPulse settings">
@@ -99,6 +105,12 @@ export default function Settings() {
           onRetry={() => revalidator.revalidate()}
         />
       </Form>
+      <InventorySync
+        key={selected?.locationGid ?? "unselected"}
+        locationGid={selected?.locationGid ?? null}
+        lastSyncedAt={selected?.lastSyncedAt ?? null}
+        busy={busy}
+      />
     </s-page>
   );
 }

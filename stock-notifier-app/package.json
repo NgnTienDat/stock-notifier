@@ -4,7 +4,7 @@
   "scripts": {
     "test": "vitest run",
     "test:unit": "vitest run tests/shopify-graphql.test.ts tests/location-settings.test.ts",
-    "test:integration": "vitest run tests/database.test.ts tests/location-settings.integration.test.ts",
+    "test:integration": "vitest run tests/database.test.ts tests/location-settings.integration.test.ts tests/inventory-sync.integration.test.ts",
     "build": "react-router build",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
