@@ -8,5 +8,7 @@ export default defineConfig({
     env: { DATABASE_URL: loadEnv("test", cwd(), "").DATABASE_URL },
     testTimeout: 15000,
     hookTimeout: 15000,
+    // Keep DB integration files from exhausting local CPU while webhook deadlines are tested.
+    maxWorkers: 2,
   },
 });

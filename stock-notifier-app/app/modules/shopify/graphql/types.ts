@@ -62,6 +62,15 @@ export type LocationInventoryResponse = {
 };
 export type InventoryItemResponse = { inventoryItem: InventoryItemNode | null };
 
+export type InventoryLevelResponse = {
+  location: { id: string; isActive: boolean } | null;
+  inventoryItem:
+    | (InventoryItemNode & {
+        inventoryLevel: Omit<InventoryLevelNode, "item"> | null;
+      })
+    | null;
+};
+
 export type GraphqlEnvelope<T> = {
   data?: T | null;
   errors?: { message: string; extensions?: { code?: string } }[];

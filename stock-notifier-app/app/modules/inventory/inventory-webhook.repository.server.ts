@@ -1,0 +1,146 @@
+import type { InventoryLevel, ShopSettings } from "@prisma/client";
+import db from "../../db.server";
+import { applyInventoryAlertTransition } from "../alerts/alert.service.server";
+import type { InventoryLevelData } from "../shopify/graphql/types";
+import type { getInventorySyncSettings } from "./inventory.repository.server";
+
+type Settings = NonNullable<
+  Awaited<ReturnType<typeof getInventorySyncSettings>>
+>;
+
+export function hasInventoryWebhook(shopDomain: string, webhookId: string) {
+  return db.webhookEvent.findUnique({
+    where: { shopDomain_webhookId: { shopDomain, webhookId } },
+    select: { id: true },
+  });
+}
+
+export function commitInventoryWebhook(
+  settings: Settings,
+  sessionId: string,
+  webhookId: string,
+  locationGid: string,
+  inventoryItemGid: string,
+  level: InventoryLevelData | null | undefined,
+) {
+  return db.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SET LOCAL lock_timeout = '500ms'`;
+      await tx.$executeRaw`SET LOCAL statement_timeout = '1000ms'`;
+      const [current] = await tx.$queryRaw<ShopSettings[]>`
+      SELECT * FROM "ShopSettings" WHERE "shopDomain" = ${settings.shopDomain} FOR UPDATE
+    `;
+      if (!current) return "settings_missing";
+      if (
+        await tx.webhookEvent.findUnique({
+          where: {
+            shopDomain_webhookId: {
+              shopDomain: settings.shopDomain,
+              webhookId,
+            },
+          },
+        })
+      )
+        return "duplicate";
+      if (
+        !(await tx.session.findFirst({
+          where: { id: sessionId, shop: settings.shopDomain, isOnline: false },
+          select: { id: true },
+        }))
+      ) {
+        return "session_missing";
+      }
+      if (
+        current.updatedAt.getTime() !== settings.updatedAt.getTime() ||
+        current.locationGid !== settings.locationGid
+      ) {
+        throw new Error(
+          "Inventory/settings changed during webhook read; retry required",
+        );
+      }
+      let result = "location_ignored";
+      if (locationGid === current.locationGid) {
+        if (level === undefined)
+          throw new Error("Missing Shopify inventory read");
+        const scope = {
+          shopDomain: settings.shopDomain,
+          locationGid,
+          inventoryItemGid,
+        };
+        if (
+          level &&
+          (level.shopDomain !== scope.shopDomain ||
+            level.locationGid !== locationGid ||
+            level.inventoryItemGid !== inventoryItemGid)
+        ) {
+          throw new Error("Inventory does not belong to webhook scope");
+        }
+        const previous = await tx.inventoryLevel.findUnique({
+          where: { shopDomain_locationGid_inventoryItemGid: scope },
+        });
+        if (
+          level?.shopifyUpdatedAt &&
+          previous?.shopifyUpdatedAt &&
+          level.shopifyUpdatedAt < previous.shopifyUpdatedAt
+        ) {
+          result = "stale_read";
+        } else {
+          const now = new Date();
+          let saved: InventoryLevel | null = null;
+          if (level) {
+            const data = {
+              variants: level.variants,
+              sku: level.sku,
+              availableQuantity: level.availableQuantity,
+              isLowStock: level.availableQuantity <= current.lowStockThreshold,
+              isCurrent: true,
+              shopifyUpdatedAt: level.shopifyUpdatedAt,
+              syncedAt: now,
+            };
+            saved = await tx.inventoryLevel.upsert({
+              where: { shopDomain_locationGid_inventoryItemGid: scope },
+              create: { ...scope, ...data },
+              update: data,
+            });
+          } else if (previous) {
+            saved = await tx.inventoryLevel.update({
+              where: { shopDomain_locationGid_inventoryItemGid: scope },
+              data: { isCurrent: false, syncedAt: now },
+            });
+          }
+          if (saved)
+            await applyInventoryAlertTransition(
+              tx,
+              current,
+              previous,
+              saved,
+              now,
+            );
+          // Invalidate in-flight full scans and other webhook reads, including negative reads.
+          await tx.shopSettings.update({
+            where: { shopDomain: current.shopDomain },
+            data: {
+              updatedAt: new Date(
+                Math.max(now.getTime(), current.updatedAt.getTime() + 1),
+              ),
+            },
+          });
+          result = level ? "updated" : "invalidated";
+        }
+      }
+      await tx.webhookEvent.create({
+        data: { shopDomain: settings.shopDomain, webhookId },
+      });
+      return result;
+    },
+    { maxWait: 500, timeout: 1500 },
+  );
+}
+
+export function deleteUninstalledSessions(shop: string) {
+  return db.$transaction(async (tx) => {
+    // Serialize uninstall with inventory commits that recheck the offline session.
+    await tx.$queryRaw`SELECT "shopDomain" FROM "ShopSettings" WHERE "shopDomain" = ${shop} FOR UPDATE`;
+    await tx.session.deleteMany({ where: { shop } });
+  });
+}

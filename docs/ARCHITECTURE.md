@@ -78,7 +78,7 @@ stock-notifier/
 - GraphQL: lấy active locations; lấy tracked inventory items, SKU, `available` tại selected location và toàn bộ `InventoryItem.variants` (kèm product metadata). Xử lý cursor pagination cả items và variants, variables và GraphQL errors; không dùng singular `variant` để giả định quan hệ 1:1.
 - Lưu `shopDomain` từ session đã xác thực, `locationGid` từ selected location; không tin shop ID do client truyền.
 - Một snapshot/alert cycle theo `shop + location + inventoryItem`; lưu metadata variants trong `variants Json`, không tạo snapshot hay message riêng cho từng variant. Đọc `InventoryLevel.updatedAt` để chống stale writes.
-- Webhook `inventory_levels/update` mang `inventory_item_id`, `location_id`, `available`, `updated_at`. So sánh location legacy ID đúng kiểu với GID đã lưu; không suy diễn item không tracked thành quantity 0.
+- Webhook `inventory_levels/update`, `connect`, `disconnect` dùng cùng route `/webhooks/inventory`. Giữ chính xác legacy ID 64-bit khi chuyển sang GID; không cắt query string của level GID. Dùng webhook làm tín hiệu đọc lại `InventoryItem.inventoryLevel(locationId)` và metadata/variants qua GraphQL; không ghi quantity từ payload. Disconnect không có `updated_at`, nên cũng đọc lại để tránh vô hiệu hóa level đã reconnect. Không suy diễn item không tracked thành quantity 0.
 - Webhook không nhất thiết mang product metadata: với inventory item chưa có trong snapshot, bổ sung metadata bằng GraphQL hoặc để lần sync kế tiếp xử lý; không hiển thị bản ghi thiếu định danh giả.
 - Khai báo subscription theo cấu hình app/template được tạo, bao gồm webhook uninstall bắt buộc nếu template yêu cầu. Dùng `authenticate.webhook(request)` để kiểm chữ ký. Không dùng auth của UI trên webhook route.
 - Shopify có thể gửi trùng, sai thứ tự hoặc bị lỡ webhook; hỗ trợ **Sync Now** để đối soát thủ công.
@@ -128,10 +128,13 @@ flowchart TD
     B -->|No| R["Reject"]
     B -->|Yes| C{"Selected location?"}
     C -->|No| OK["Return 2xx"]
-    C -->|Yes| D["Begin DB transaction"]
+    C -->|Yes| READ["Read current GraphQL state outside transaction"]
+    READ --> D["Begin transaction; lock ShopSettings"]
     D --> E{"Webhook ID đã xử lý?"}
     E -->|Yes| I
-    E -->|No| F{"Payload cũ hơn snapshot?"}
+    E -->|No| V{"Version/location/session still valid?"}
+    V -->|Conflict| RETRY["Rollback; return 503 for retry"]
+    V -->|Yes| F{"GraphQL snapshot older than stored?"}
     F -->|Yes| G["Mark delivery processed"]
     F -->|No| H["Lock/upsert inventory; transition only after baseline"]
     H --> G
@@ -147,7 +150,7 @@ flowchart TD
 
 1. Unique `(shopDomain, webhookId)`; ghi nhận delivery **trong cùng transaction** với inventory và alert. Nếu transaction lỗi, rollback delivery ID để Shopify có thể retry.
 2. Lock hàng inventory (hoặc atomic conditional update/serializable retry) khi đánh giá trạng thái; không tạo hai `ACTIVE` alerts do webhook đồng thời.
-3. Bỏ qua event `updated_at` **cũ hơn** snapshot đã lưu; khi timestamp bằng nhau nhưng quantity mâu thuẫn, ưu tiên đối soát GraphQL/Sync Now, không ghi đè mù quáng.
+3. Payload cũ chỉ kích hoạt đối soát GraphQL, không ghi trực tiếp. Snapshot GraphQL cũ hơn `shopifyUpdatedAt` đã lưu bị bỏ qua; timestamp bằng nhau dùng kết quả đọc GraphQL hiện tại. Đọc API ngoài transaction, sau đó lock ShopSettings và kiểm tra lại version/location/session trước commit, kể cả kết quả âm (deleted/disconnected). Mỗi inventory commit tăng `updatedAt` đơn điệu để vô hiệu hóa scan/read đồng thời, không đổi `lastSyncedAt` của full sync. Conflict trả 503 để Shopify retry; thiếu session/settings thì ACK và đối soát thủ công sau khi khôi phục auth. Uninstall xóa session dưới cùng shop lock.
 4. Database commit trước khi gọi Telegram. Telegram lỗi: lưu `FAILED`, webhook vẫn trả 2xx nếu DB đã commit. Nếu DB lỗi: trả lỗi 5xx để Shopify retry. Đặt timeout ngắn (ví dụ 2 giây) cho Telegram để webhook có thể phản hồi nhanh.
 5. `PENDING` sau crash có thể cần retry thủ công; crash đúng sau khi Telegram gửi nhưng trước khi ghi `SENT` có thể gây gửi lại. **Không cam kết exactly-once giữa PostgreSQL và Telegram**.
 6. **Initial sync** khi `lastSyncedAt = null` chỉ thiết lập baseline, không tạo alert/gửi Telegram. **Sync Now tiếp theo** dùng chung Alert Engine với webhook; item mới hoặc trở lại current chỉ nhận baseline. Đổi threshold rebase `isLowStock` của items current sau baseline và resolve alerts không còn hợp lệ, không tạo alert mới. Mọi inventory/settings writer phải lock cùng hàng `ShopSettings`; sync kiểm tra lại `updatedAt` trước commit để hủy scan dùng cấu hình cũ. Inventory và alert transitions nằm trong cùng transaction; partial unique ACTIVE index là chốt chống trùng. Full sync và đổi location tuân theo mục 3.

@@ -47,3 +47,20 @@ export const INVENTORY_ITEM_QUERY = `#graphql
     }
   }
 `;
+
+export const INVENTORY_LEVEL_QUERY = `#graphql
+  query StockPulseInventoryLevel($itemId: ID!, $locationId: ID!) {
+    location(id: $locationId) { id isActive }
+    inventoryItem(id: $itemId) {
+      id sku tracked
+      variants(first: 10) {
+        nodes { id title product { id title } }
+        pageInfo { hasNextPage endCursor }
+      }
+      inventoryLevel(locationId: $locationId, includeInactive: true) {
+        id isActive updatedAt
+        quantities(names: ["available"]) { name quantity }
+      }
+    }
+  }
+`;

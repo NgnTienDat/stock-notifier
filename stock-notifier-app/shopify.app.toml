@@ -10,7 +10,11 @@ automatically_update_urls_on_dev = true
 include_config_on_deploy = true
 
 [webhooks]
-api_version = "2027-01"
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/inventory"
+  topics = [ "inventory_levels/update", "inventory_levels/connect", "inventory_levels/disconnect" ]
 
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/scopes_update"
@@ -23,7 +27,7 @@ api_version = "2027-01"
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 # scopes = "write_products,write_metaobjects,write_metaobject_definitions"
-scopes = "read_inventory,read_products"
+scopes = "read_inventory,read_products,read_locations"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]

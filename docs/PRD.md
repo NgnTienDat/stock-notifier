@@ -10,7 +10,7 @@ Tài liệu liên quan: [Architecture](ARCHITECTURE.md) · [Database](DATABASE.m
 | --- | --- | --- |
 | P0 | Shopify auth | Cài/mở app trong Development Store, bảo vệ dữ liệu theo shop |
 | P0 | Location & sync | Chọn **một location đang theo dõi**; full sync các tracked Inventory Items và `available` quantity |
-| P0 | Webhook | Nhận `inventory_levels/update`, xác thực, lọc location, bỏ qua delivery trùng/cũ |
+| P0 | Webhook | Nhận `inventory_levels/update`, `connect`, `disconnect`; xác thực, lọc location, dedup và đọc lại GraphQL để chống stale payload |
 | P0 | Low-stock | Threshold mặc định 5, áp dụng toàn shop; quản lý chuyển trạng thái và active alert |
 | P0 | Telegram | Một Bot Token trên server + một Chat ID/shop; test và gửi khi mới vào low-stock |
 | P0 | Embedded UI | Dashboard inventory + Settings (location, threshold, Telegram, sync) |

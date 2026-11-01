@@ -11,6 +11,7 @@ import {
 } from "../app/modules/shopify/graphql/shopify-graphql.server";
 import {
   INVENTORY_ITEM_QUERY,
+  INVENTORY_LEVEL_QUERY,
   LOCATION_INVENTORY_QUERY,
   LOCATIONS_QUERY,
 } from "../app/modules/shopify/graphql/queries";
@@ -21,6 +22,109 @@ import type {
   InventoryLevelNode,
   VariantNode,
 } from "../app/modules/shopify/graphql/types";
+
+describe("single inventory level reads for webhooks", () => {
+  it("uses variables, retains the whole level GID and completes nested variants", async () => {
+    const { graphql, service } = setup();
+    graphql.mockResolvedValueOnce(
+      response({
+        location: { id: locationGid, isActive: true },
+        inventoryItem: {
+          ...item({ variants: connection([variant("1")], "more") }),
+          inventoryLevel: level(),
+        },
+      }),
+    );
+    graphql.mockResolvedValueOnce(
+      response({
+        inventoryItem: item({ variants: connection([variant("2")]) }),
+      }),
+    );
+    expect(await service.getInventoryLevel(locationGid, itemGid)).toMatchObject(
+      {
+        inventoryLevelGid: levelGid,
+        availableQuantity: 5,
+        variants: [
+          expect.objectContaining({ variantTitle: "Variant 1" }),
+          expect.objectContaining({ variantTitle: "Variant 2" }),
+        ],
+      },
+    );
+    expect(graphql).toHaveBeenNthCalledWith(1, INVENTORY_LEVEL_QUERY, {
+      variables: { locationId: locationGid, itemId: itemGid },
+      tries: 1,
+    });
+    expect(graphql).toHaveBeenNthCalledWith(2, INVENTORY_ITEM_QUERY, {
+      variables: { id: itemGid, first: 50, after: "more" },
+      tries: 1,
+    });
+  });
+  it.each([
+    "deleted",
+    "untracked",
+    "disconnected",
+    "inactive-level",
+    "inactive-location",
+  ])("returns null for %s without fabricating quantity zero", async (kind) => {
+    const { graphql, service } = setup();
+    graphql.mockResolvedValueOnce(
+      response({
+        location: { id: locationGid, isActive: kind !== "inactive-location" },
+        inventoryItem:
+          kind === "deleted"
+            ? null
+            : {
+                ...item({ tracked: kind !== "untracked" }),
+                inventoryLevel:
+                  kind === "disconnected"
+                    ? null
+                    : level({ isActive: kind !== "inactive-level" }),
+              },
+      }),
+    );
+    expect(await service.getInventoryLevel(locationGid, itemGid)).toBeNull();
+  });
+  it("rejects missing fields/quantity and preserves webhook abort/no-backoff options", async () => {
+    const graphql = vi.fn<AdminGraphqlClient>();
+    const controller = new AbortController();
+    const service = createShopifyGraphqlService(
+      {
+        admin: { graphql },
+        session: new Session({
+          id: "offline_fixture",
+          shop: "fixture.myshopify.com",
+          state: "",
+          isOnline: false,
+        }),
+      },
+      { signal: controller.signal, maxRetries: 0 },
+    );
+    graphql.mockResolvedValueOnce(response({}));
+    await expect(
+      service.getInventoryLevel(locationGid, itemGid),
+    ).rejects.toThrow("omitted");
+    graphql.mockResolvedValueOnce(
+      response({
+        location: { id: locationGid, isActive: true },
+        inventoryItem: { ...item(), inventoryLevel: level({ quantities: [] }) },
+      }),
+    );
+    await expect(
+      service.getInventoryLevel(locationGid, itemGid),
+    ).rejects.toThrow("invalid quantity");
+    graphql.mockRejectedValueOnce(new Response(null, { status: 429 }));
+    await expect(
+      service.getInventoryLevel(locationGid, itemGid),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(graphql).toHaveBeenCalledTimes(3);
+    expect(graphql.mock.calls[2][1]?.signal).toBe(controller.signal);
+    controller.abort();
+    await expect(
+      service.getInventoryLevel(locationGid, itemGid),
+    ).rejects.toThrow();
+    expect(graphql).toHaveBeenCalledTimes(3);
+  });
+});
 
 const locationGid = "gid://shopify/Location/1";
 const itemGid = "gid://shopify/InventoryItem/2";
