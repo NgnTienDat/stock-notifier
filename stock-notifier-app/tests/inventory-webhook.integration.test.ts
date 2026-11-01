@@ -8,6 +8,7 @@ import db from "../app/db.server";
 import { authenticate } from "../app/shopify.server";
 import { action } from "../app/routes/webhooks.inventory";
 import { processInventoryWebhook } from "../app/modules/inventory/inventory-webhook.service.server";
+import { processNotificationForShop } from "../app/modules/notifications/notification-worker.server";
 import { deleteUninstalledSessions } from "../app/modules/inventory/inventory-webhook.repository.server";
 import {
   commitInventorySync,
@@ -539,4 +540,30 @@ test("a busy shop lock fails promptly without consuming the delivery; retry succ
     await holder;
   }
   expect((await deliver(id)).status).toBe(200);
+});
+
+test("webhook commits the notification before responding but never calls Telegram in the request", async () => {
+  vi.stubEnv("TELEGRAM_BOT_TOKEN", "fixture-only-token");
+  const telegram = vi
+    .fn<typeof fetch>()
+    .mockImplementation(async () => new Response(JSON.stringify({ ok: true })));
+  vi.stubGlobal("fetch", telegram);
+  await db.shopSettings.update({
+    where: { shopDomain: shop },
+    data: { telegramChatId: "-100123" },
+  });
+  await seed();
+  const id = randomUUID();
+  expect((await deliver(id)).status).toBe(200);
+  expect(telegram).not.toHaveBeenCalled();
+  expect((await snapshot()).alerts[0]).toMatchObject({
+    notificationStatus: "PENDING",
+    notificationNextAttemptAt: expect.any(Date),
+  });
+  expect((await deliver(id)).status).toBe(200);
+  await processNotificationForShop(shop);
+  expect(telegram).toHaveBeenCalledTimes(1);
+  expect((await snapshot()).alerts[0]).toMatchObject({
+    notificationStatus: "SENT",
+  });
 });

@@ -30,7 +30,7 @@ Không làm: multi-location monitoring đồng thời, threshold từng variant,
 
 - **Inventory Item** là đơn vị theo dõi, tính KPI và tạo alert theo `shop + location + inventoryItem`. Một item có thể liên kết nhiều variants; lưu danh sách metadata trong JSON, không nhân bản quantity hay alert theo variant.
 - `NORMAL` nếu `availableQuantity > threshold`; `LOW_STOCK` nếu `availableQuantity <= threshold`. `OUT_OF_STOCK` (`quantity = 0`) chỉ là nhãn hiển thị, **không phải** loại alert thứ hai.
-- `NORMAL → LOW_STOCK`: tạo một alert `ACTIVE`, cố gắng gửi Telegram một lần.
+- `NORMAL → LOW_STOCK`: tạo một alert `ACTIVE`; nếu Telegram đã cấu hình, lên lịch một notification với retry hữu hạn (tối đa 3 lần thử). Không gửi hàng loạt alert cũ sau khi cấu hình Telegram.
 - `LOW_STOCK → LOW_STOCK`: cập nhật quantity, không tạo/gửi alert mới.
 - `LOW_STOCK → NORMAL`: resolve alert `ACTIVE` nếu có.
 - `NORMAL → NORMAL`: không tạo alert.

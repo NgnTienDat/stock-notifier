@@ -17,7 +17,7 @@
 | AC09 | P0 | `NORMAL→LOW` tạo một active alert/item, không nhân theo variants; tiếp tục low không tạo alert khác; restock resolve; giảm tiếp tạo alert mới | Chuỗi webhook 6→5→3→8→4 trên item có nhiều variants; một message/transition |
 | AC10 | P0 | Concurrent duplicate/transition không tạo hai active alerts | Integration test transaction/race |
 | AC11 | P0 | `Send Test` và low-stock gửi Telegram thật đến Chat ID đã cấu hình | Kiểm tra Telegram chat |
-| AC12 | P0 | Telegram lỗi không rollback quantity/alert; lưu trạng thái `FAILED` | Mock Telegram 500/timeout |
+| AC12 | P0 | Telegram lỗi không rollback quantity/alert/webhook; ghi FAILED và retry hữu hạn, webhook không chờ gửi; không gửi alert cũ khi mới cấu hình | Mock Telegram 429/500/timeout, concurrent workers, restart/lease fencing và transaction rollback |
 | AC13 | P0 | Dashboard hiển thị quantity, SKU, metadata variants từ JSON, status, KPI tính theo item, filter và last sync từ DB; chỉ dùng `isCurrent = true` tại selected location | UI smoke test với nhiều variants/item và rows không còn current |
 | AC14 | P0 | Threshold là số nguyên 0–2147483647, default 5; đổi threshold rebase items current tại selected location và resolve alerts không còn hợp lệ; không tạo alert/gửi Telegram chỉ vì đổi cấu hình | Form kiểm tra thủ công; integration test rebase, rollback, scope và scan dùng threshold cũ; trước baseline không đánh giá transition |
 | AC15 | P0 | Đổi location atomically resolve alerts cũ, đặt snapshots cũ `isCurrent = false`, chuyển scope, reset `lastSyncedAt = null`; initial sync location mới là baseline không tạo alert/gửi Telegram, giữ lịch sử | Đổi location A→B→A, kể cả sync mới thất bại: không dùng baseline cũ, không lẫn dữ liệu hoặc gửi alert trước baseline thành công |

@@ -1,14 +1,19 @@
 import type { InventoryLevel, Prisma, ShopSettings } from "@prisma/client";
+import { formatInventoryNotification } from "../notifications/telegram.server";
 
 type State = Pick<InventoryLevel, "isLowStock" | "isCurrent">;
 type Scope = Pick<InventoryLevel, "shopDomain" | "locationGid">;
 type AlertInventory = State &
   Scope &
-  Pick<InventoryLevel, "id" | "availableQuantity">;
+  Pick<
+    InventoryLevel,
+    "id" | "availableQuantity" | "variants" | "sku" | "inventoryItemGid"
+  >;
 type AlertSettings = Pick<
   ShopSettings,
   "shopDomain" | "locationGid" | "lastSyncedAt" | "lowStockThreshold"
->;
+> &
+  Partial<Pick<ShopSettings, "telegramChatId" | "locationName">>;
 
 export function getAlertTransition(
   previous: State | null,
@@ -67,6 +72,9 @@ export async function applyInventoryAlertTransition(
     };
   }
   if (transition === "create") {
+    const configured = Boolean(
+      process.env.TELEGRAM_BOT_TOKEN?.trim() && settings.telegramChatId,
+    );
     // ON CONFLICT DO NOTHING honors the existing partial unique ACTIVE-alert index.
     const { count } = await tx.inventoryAlert.createMany({
       data: [
@@ -75,6 +83,16 @@ export async function applyInventoryAlertTransition(
           quantityAtTrigger: current.availableQuantity,
           thresholdAtTrigger: settings.lowStockThreshold,
           triggeredAt: now,
+          notificationChatId: configured ? settings.telegramChatId : null,
+          notificationText: configured
+            ? formatInventoryNotification({
+                ...current,
+                locationName: settings.locationName,
+                quantity: current.availableQuantity,
+                threshold: settings.lowStockThreshold,
+              })
+            : null,
+          notificationNextAttemptAt: configured ? now : null,
         },
       ],
       skipDuplicates: true,
